@@ -132,6 +132,7 @@ class PyiCloudBackend(PhotosBackend):
             id=p.id, filename=p.filename, size=p.size or 0, created=p.asset_date,
             modified=p.added_date, item_type="movie" if p.item_type == "movie" else "image",
             favorite=bool(record_field_value(p.asset_record, "isFavorite")), hidden=hidden, deleted=deleted,
+            live=bool(getattr(p, "is_live_photo", False)),
         )
 
     def download_url(self, asset_id: str, version: str = "original") -> str | None:

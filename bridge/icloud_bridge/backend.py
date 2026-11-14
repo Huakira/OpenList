@@ -27,6 +27,7 @@ class AssetRec:
     favorite: bool = False
     hidden: bool = False
     deleted: bool = False
+    live: bool = False        # Live Photo: always read-only, whatever the whitelist says
 
 
 @dataclass(frozen=True)

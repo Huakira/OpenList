@@ -212,3 +212,25 @@ def test_refresh_skips_when_unchanged(env):
     assert ops.refresh() is True and fb.snapshots == n + 1
     assert "new.jpg" in names(ops, "all")
     assert ops.refresh(force=True) is True                      # manual refresh
+
+
+def test_live_photo_is_read_only_even_without_whitelist(env):
+    ops, fb, d = env
+    live = fb.seed_asset("IMG_0100.HEIC", live=True)
+    ops.refresh(force=True)
+    ops.s = replace(ops.s, whitelist=False)        # simulate M5: whitelist off
+    fid = file_id("all", live.id)
+    trip = f"album:{d['trip'].id}"
+    for call in (
+        lambda: ops.remove(fid),
+        lambda: ops.move(fid, trip),
+        lambda: ops.copy(fid, trip),
+        lambda: ops.other("favorite", fid),
+        lambda: ops.other("purge", fid),
+        lambda: ops.upload("all", "IMG_0100.HEIC", io.BytesIO(b"x")),
+    ):
+        with pytest.raises(Forbidden):
+            call()
+    assert fb.assets[live.id].favorite is False and not fb.assets[live.id].deleted
+    # ordinary photos are still writable once the whitelist is off
+    ops.other("favorite", file_id("all", d["real"].id))

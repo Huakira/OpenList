@@ -193,6 +193,11 @@ class Ops:
             raise ReadOnly("BRIDGE_READ_ONLY is on: all writes are refused")
 
     def _need_asset(self, asset_id: str) -> None:
+        # Live Photos are read-only for good: the still and its paired video must
+        # stay together, and this check does not depend on the whitelist.
+        rec = self.index.asset(asset_id)
+        if rec is not None and rec.live:
+            raise Forbidden(f"live photo {asset_id} is read-only")
         if self.s.whitelist and not self.index.is_owned("asset", asset_id):
             raise Forbidden(f"whitelist: asset {asset_id} was not created by the bridge")
 

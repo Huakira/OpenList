@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS assets (
   id TEXT PRIMARY KEY, filename TEXT NOT NULL, size INTEGER NOT NULL,
   created TEXT NOT NULL, modified TEXT NOT NULL, item_type TEXT NOT NULL,
   favorite INTEGER NOT NULL DEFAULT 0, hidden INTEGER NOT NULL DEFAULT 0,
-  deleted INTEGER NOT NULL DEFAULT 0,
+  deleted INTEGER NOT NULL DEFAULT 0, live INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'ready',     -- ready | processing | failed
   staged_path TEXT
 );
@@ -53,7 +53,7 @@ def _row_asset(r: sqlite3.Row) -> AssetRec:
         created=datetime.fromisoformat(r["created"]),
         modified=datetime.fromisoformat(r["modified"]),
         item_type=r["item_type"], favorite=bool(r["favorite"]),
-        hidden=bool(r["hidden"]), deleted=bool(r["deleted"]),
+        hidden=bool(r["hidden"]), deleted=bool(r["deleted"]), live=bool(r["live"]),
     )
 
 
@@ -69,6 +69,9 @@ class Index:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
+        cols = {r["name"] for r in self.db.execute("PRAGMA table_info(assets)")}
+        if "live" not in cols:      # index created before the live-photo guard
+            self.db.execute("ALTER TABLE assets ADD COLUMN live INTEGER NOT NULL DEFAULT 0")
 
     # ---------- bulk sync ----------
     def replace_snapshot(self, snap: Snapshot) -> None:
@@ -79,9 +82,9 @@ class Index:
             self.db.execute("DELETE FROM smart")
             self.db.executemany(
                 "INSERT OR REPLACE INTO assets (id, filename, size, created, modified,"
-                " item_type, favorite, hidden, deleted, status) VALUES (?,?,?,?,?,?,?,?,?,'ready')",
+                " item_type, favorite, hidden, deleted, live, status) VALUES (?,?,?,?,?,?,?,?,?,?,'ready')",
                 [(a.id, a.filename, a.size, _ts(a.created), _ts(a.modified), a.item_type,
-                  int(a.favorite), int(a.hidden), int(a.deleted)) for a in snap.assets],
+                  int(a.favorite), int(a.hidden), int(a.deleted), int(a.live)) for a in snap.assets],
             )
             self.db.executemany(
                 "INSERT INTO albums VALUES (?,?,?,?)",
@@ -181,9 +184,11 @@ class Index:
                   staged_path: str | None = None) -> None:
         with self._lock, self.db:
             self.db.execute(
-                "INSERT OR REPLACE INTO assets VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT OR REPLACE INTO assets (id, filename, size, created, modified,"
+                " item_type, favorite, hidden, deleted, live, status, staged_path)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (a.id, a.filename, a.size, _ts(a.created), _ts(a.modified), a.item_type,
-                 int(a.favorite), int(a.hidden), int(a.deleted), status, staged_path),
+                 int(a.favorite), int(a.hidden), int(a.deleted), int(a.live), status, staged_path),
             )
 
     def replace_asset_id(self, old: str, new: AssetRec) -> None:
