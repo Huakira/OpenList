@@ -55,13 +55,10 @@ def main(test_file: Path) -> int:
     t0 = time.monotonic()
     asset = be.upload(test_file, test_file.name)
     res["upload_returned_s"] = round(time.monotonic() - t0, 1)
-    seen = None
-    for _ in range(60):
-        snap_ids = {p.id for p in be.library.all.photos}
-        if asset.id in snap_ids:
-            seen = round(time.monotonic() - t0, 1)
-            break
-        time.sleep(2)
+    # pyicloud's upload() already waits (upload_hydration_timeout) until the photo
+    # is readable, so the return time is the visibility delay. Iterating the whole
+    # library to poll takes minutes on a large account and is not needed.
+    seen = res["upload_returned_s"]
     res["3_visible_after_s"] = seen
     save(res)
 
