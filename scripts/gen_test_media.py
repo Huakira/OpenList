@@ -83,7 +83,16 @@ def main(out: Path) -> int:
                         f"-ContentIdentifier={cid}", str(still)], check=True)
         subprocess.run(["exiftool", "-q", "-overwrite_original",
                         f"-QuickTime:ContentIdentifier={cid}", str(clip)], check=True)
-        made.append({"file": still.name, "pair": clip.name, "marker": m, "live": cid})
+        got = subprocess.run(["exiftool", "-s3", "-ContentIdentifier", str(still)],
+                             capture_output=True, text=True).stdout.strip()
+        if got == cid:
+            made.append({"file": still.name, "pair": clip.name, "marker": m, "live": cid})
+        else:
+            # Apple keeps it in Apple MakerNotes, which exiftool cannot create.
+            for f in (still, clip):
+                f.unlink()
+            skipped.append({"format": "live", "reason": "HEIC ContentIdentifier not "
+                            "writable without Apple MakerNotes; use a real iPhone Live Photo"})
     else:
         skipped.append({"format": "live", "reason": "needs HEIC + ffmpeg + exiftool"})
 

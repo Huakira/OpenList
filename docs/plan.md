@@ -31,7 +31,8 @@ The original plan (sections 0 to 9) was written in the DSH session on 2026-11-14
 | Milestone | State |
 |---|---|
 | Code skeleton | Done. Bridge: 12 tests on the fake backend. Driver: `go test` passes inside OpenList v4.2.7. Image builds. |
-| M0 | Waiting for the owner to log in (`docker compose run --rm icloud-bridge login`). Back up the full library first (6.1). |
+| M0 prep | Test media: JPEG, PNG, HEIC, MOV generated (`scripts/gen_test_media.py`, 2001-01-01, unique marker). A Live Photo cannot be faked: the HEIC ContentIdentifier sits in Apple MakerNotes, which exiftool cannot create, so the owner must supply one real iPhone Live Photo. Backup: `scripts/backup.py` (preflight, pyicloud sync, count check). |
+| M0 | Blocked on: (1) owner login + 2FA; (2) a backup destination. nyc `/` had only 3.2G free on 2026-11-14 (95% used). |
 | M1 to M5 | Not started. |
 
 ## Known gaps in the skeleton
