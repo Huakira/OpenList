@@ -16,7 +16,7 @@ from urllib.parse import urlencode
 
 from pyicloud import PyiCloudService
 from pyicloud.const import CONTENT_TYPE, CONTENT_TYPE_TEXT
-from pyicloud.services.photos.exceptions import PhotosApiError, PhotosRateLimited
+from pyicloud.services.photos.exceptions import PhotosApiError, PhotosRateLimited, PhotosServiceException
 from pyicloud.services.photos.mappers import (
     record_change_tag,
     record_field_value,
@@ -158,11 +158,24 @@ class PyiCloudBackend(PhotosBackend):
     def create_album(self, name: str, parent_id: str | None) -> AlbumRec:
         if parent_id:
             raise BackendError("creating albums inside folders is not implemented yet")
-        album = _retry(lambda: self.library.create_album(name), "create_album")
-        if album is None:
-            raise BackendError("create_album returned nothing")
+        try:
+            album = _retry(lambda: self.library.create_album(name), "create_album")
+        except PhotosServiceException as e:
+            # pyicloud says "outcome is uncertain": on the real account the album was
+            # created anyway (M0). Never retry blindly (that could make a duplicate):
+            # confirm by exact name, and fail only if it really is absent.
+            album = self._find_plain_album(name)
+            if album is None:
+                raise BackendError(f"create_album outcome uncertain and no album named {name!r} found; not retried") from e
+            log.warning("create_album %r: outcome was uncertain, album exists: %s", name, album.id)
         self._albums[album.id] = album
         return AlbumRec(id=album.id, name=name)
+
+    def _find_plain_album(self, name: str):
+        """Exactly one ordinary (not smart, not folder) album with this name, else None."""
+        hits = [a for a in self.library.albums
+                if not isinstance(a, (SmartPhotoAlbum, PhotoAlbumFolder)) and a.name == name]
+        return hits[0] if len(hits) == 1 else None
 
     def rename_album(self, album_id: str, name: str) -> None:
         _retry(lambda: self._album(album_id).rename(name), "rename_album")

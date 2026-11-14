@@ -30,8 +30,24 @@ The original plan (sections 0 to 9) was written in the DSH session on 2026-11-14
 
 | Milestone | State |
 |---|---|
-| Code skeleton | Done. Bridge: 12 tests on the fake backend. Driver: `go test` passes inside OpenList v4.2.7. Image builds. |
-| M0 to M5 | Not run. The owner scoped the work to code only (2026-11-14): no library backup, no sync. Live verification on the account is left to the owner. |
+| Code skeleton | Done. Bridge: 18 tests on the fake backend. Driver: `go test` passes inside OpenList v4.2.7. Images build. |
+| Login | Done 2026-11-14: China mainland Apple ID (`ICLOUD_CHINA=1`), trusted session in `data/session`. |
+| Egress | nyc to `icloud.com.cn` is lossy (CMI route, ~1 in 12 TCP connects succeed). The bridge sends all iCloud traffic through the `ssh-socks` sidecar (SSH SOCKS5 to hkdis, dedicated key `data/tunnel/id_ed25519`, `restrict,port-forwarding` on hkdis). 5/5 connects ok via the tunnel. |
+| Downloads | No 302. Driver always proxies: OpenList -> bridge `/v1/raw` -> iCloud (Range supported). Thumbnails are not exposed (they would be direct iCloud URLs). Checked end to end on a throwaway OpenList: driver listed, `only_proxy`, 200 with no redirect, bytes identical, Range 206. |
+| M0 (real account) | Run 2026-11-14, see below. |
+| M1 to M5 | Not run. Whitelist stays on. |
+
+### M0 results (China site, via the tunnel)
+
+- 3 Upload visible after 8.4 s (pyicloud waits for hydration before returning).
+- 1 Signed download URL works without cookies (`cvws.icloud-content.com.cn`, plain GET 206). The bridge relies on this.
+- 2 URL lifetime: not measured (`m0_probe.py --expiry`).
+- 4 Remove from album: `isDeleted` and `forceDelete` both work. Default stays `isDeleted`.
+- 5 Hide, unhide, delete (to Recently Deleted) and recover all work. A write with a stale cached record still succeeded.
+- ADP: Photos readable through the web API, so Advanced Data Protection is almost certainly off (inferred).
+- `create_album` raises "outcome is uncertain" although the album is created. The bridge now confirms by exact name and never retries blindly.
+- iCloud ignores the EXIF capture date on upload: the test photo got today's date, not 2001.
+- Library size seen: 4432 photos, 37 albums, 1618 Live Photos. A full snapshot takes ~4 min.
 
 ## Known gaps in the skeleton
 
