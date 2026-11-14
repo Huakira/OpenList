@@ -94,9 +94,19 @@ class Ops:
         self.s.staging_dir.mkdir(parents=True, exist_ok=True)
 
     # ======================= sync =======================
-    def refresh(self) -> None:
+    def refresh(self, force: bool = False) -> bool:
+        """Re-read the library only when iCloud's change token moved.
+        Returns True when a full snapshot was taken."""
+        token = self.backend.change_token()
+        if not force and token is not None and token == self.index.get_meta("sync_token"):
+            self.index.set_meta("last_check", datetime.now(timezone.utc).isoformat())
+            return False
         snap = self.backend.snapshot()
-        self.index.replace_snapshot(snap)
+        with self._wlock:            # never overwrite the index mid-write
+            self.index.replace_snapshot(snap)
+            if token is not None:
+                self.index.set_meta("sync_token", token)
+        return True
 
     # ======================= reads =======================
     def kind(self, key: str) -> tuple[str, str]:

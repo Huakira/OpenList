@@ -186,8 +186,8 @@ def create_app(settings: config.Settings | None = None,
 
     @app.post("/v1/refresh", dependencies=guard)
     def refresh(request: Request):
-        ops_of(request).refresh()
-        return {"last_sync": ops_of(request).index.get_meta("last_sync")}
+        took = ops_of(request).refresh(force=True)
+        return {"snapshot": took, "last_sync": ops_of(request).index.get_meta("last_sync")}
 
     @app.get("/v1/audit", dependencies=guard)
     def audit(request: Request, n: int = 50):

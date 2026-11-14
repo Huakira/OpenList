@@ -202,3 +202,13 @@ def test_cleanup_only_owned(env):
     ops.cleanup(confirm=True)
     assert d["trip"].id in fb.albums and not fb.assets[d["real"].id].deleted
     assert fb.assets[prev["assets"][0]["id"]].deleted
+
+
+def test_refresh_skips_when_unchanged(env):
+    ops, fb, d = env
+    n = fb.snapshots
+    assert ops.refresh() is False and fb.snapshots == n         # nothing changed
+    fb.seed_asset("new.jpg")                                    # change on iCloud
+    assert ops.refresh() is True and fb.snapshots == n + 1
+    assert "new.jpg" in names(ops, "all")
+    assert ops.refresh(force=True) is True                      # manual refresh

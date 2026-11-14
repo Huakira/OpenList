@@ -116,6 +116,16 @@ class PyiCloudBackend(PhotosBackend):
                   for pid, p in photos.items()]
         return Snapshot(assets=assets, albums=albums, memberships=members, smart=smart)
 
+    def change_token(self) -> str | None:
+        """Current syncToken of the primary zone (one zones/list call)."""
+        lib = self.library._get_root_library()
+        lib._current_sync_token = None   # pyicloud caches it; force a fresh read
+        try:
+            return _retry(lib.sync_cursor, "sync_cursor")
+        except Exception:
+            log.warning("no sync token; falling back to a full snapshot", exc_info=True)
+            return None
+
     @staticmethod
     def _rec(p, *, hidden: bool = False, deleted: bool = False) -> AssetRec:
         return AssetRec(

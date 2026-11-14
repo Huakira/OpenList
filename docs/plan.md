@@ -31,13 +31,11 @@ The original plan (sections 0 to 9) was written in the DSH session on 2026-11-14
 | Milestone | State |
 |---|---|
 | Code skeleton | Done. Bridge: 12 tests on the fake backend. Driver: `go test` passes inside OpenList v4.2.7. Image builds. |
-| M0 prep | Test media: JPEG, PNG, HEIC, MOV generated (`scripts/gen_test_media.py`, 2001-01-01, unique marker). A Live Photo cannot be faked: the HEIC ContentIdentifier sits in Apple MakerNotes, which exiftool cannot create, so the owner must supply one real iPhone Live Photo. Backup: `scripts/backup.py` (preflight, pyicloud sync, count check). |
-| M0 | Blocked on: (1) owner login + 2FA; (2) a backup destination. nyc `/` had only 3.2G free on 2026-11-14 (95% used). |
-| M1 to M5 | Not started. |
+| M0 to M5 | Not run. The owner scoped the work to code only (2026-11-14): no library backup, no sync. Live verification on the account is left to the owner. |
 
 ## Known gaps in the skeleton
 
-- Sync is a full snapshot every `BRIDGE_SYNC_INTERVAL`. It is slow on a big library; the plan's incremental sync (`iter_changes`) comes in M1.
+- Refresh first reads the zone syncToken (one call) and takes a full snapshot only when it moved. Applying individual changes (`iter_changes`) is not done: it cannot be tested without the account.
 - Thumbnail URLs come from the snapshot and may expire between refreshes (see M0 ②).
 - Session-expiry notification channel: not decided.
 - Shared library: read-only, not wired yet.

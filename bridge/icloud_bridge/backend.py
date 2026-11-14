@@ -76,6 +76,10 @@ class PhotosBackend(ABC):
     def set_flag(self, asset_id: str, flag: str, value: bool) -> None:
         """flag in {"favorite", "hidden", "deleted"}; deleted=False is recover."""
 
+    def change_token(self) -> str | None:
+        """Cheap token that changes whenever the library changes; None = unknown."""
+        return None
+
     def health(self) -> dict:
         return {"session": "ok"}
 
@@ -97,12 +101,15 @@ class FakeBackend(PhotosBackend):
         self.calls: list[tuple] = []
         self.fail_on: set[str] = set()   # method names that raise, for failure tests
         self.files_dir = files_dir
+        self.version = 0                 # bumps on every change, like a sync token
+        self.snapshots = 0
 
     def _id(self, prefix: str) -> str:
         return f"{prefix}{next(self._ids):04d}"
 
     def _maybe_fail(self, name: str) -> None:
         self.calls.append((name,))
+        self.version += 1
         if name in self.fail_on:
             raise BackendError(f"injected failure in {name}")
 
@@ -113,6 +120,7 @@ class FakeBackend(PhotosBackend):
                        created=now, modified=now, **kw)
         self.assets[rec.id] = rec
         self.blobs[rec.id] = data
+        self.version += 1
         return rec
 
     def seed_album(self, name: str, parent_id: str | None = None,
@@ -121,10 +129,15 @@ class FakeBackend(PhotosBackend):
                        is_folder=is_folder)
         self.albums[rec.id] = rec
         self.members[rec.id] = []
+        self.version += 1
         return rec
 
     # --- PhotosBackend ---
+    def change_token(self) -> str | None:
+        return f"v{self.version}"
+
     def snapshot(self) -> Snapshot:
+        self.snapshots += 1
         with self._lock:
             live = [a for a in self.assets.values()]
             smart = {
