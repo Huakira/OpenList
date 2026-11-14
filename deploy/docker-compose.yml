@@ -1,0 +1,22 @@
+# icloud-photos-bridge. No published ports: only reachable from the existing
+# OpenList container (/opt/openlist) on the openlist_default network.
+name: icloud-photos
+services:
+  icloud-bridge:
+    build: ../bridge
+    image: icloud-photos-bridge:0.1.0
+    container_name: icloud-bridge
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - TZ=America/New_York
+      - BRIDGE_DATA_DIR=/data
+    volumes:
+      - /opt/icloud-photos/data:/data          # session, index.sqlite3, audit.jsonl, staging
+      - /opt/icloud-photos/backup:/backup      # full library backup (plan 6.1)
+    networks:
+      - openlist_default
+
+networks:
+  openlist_default:
+    external: true
