@@ -10,8 +10,10 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+import requests
 from pydantic import BaseModel
+from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 
 from . import config
@@ -144,11 +146,24 @@ def create_app(settings: config.Settings | None = None,
         return ops_of(request).link(id, "thumb")
 
     @app.get("/v1/raw", dependencies=guard)
-    def raw(request: Request, id: str):
-        res = ops_of(request).link(id)
-        if not res.get("local"):
-            raise NotFound("not a staged file")
-        return FileResponse(res["path"])   # supports Range
+    def raw(request: Request, id: str, version: str = "original"):
+        """File bytes through the bridge, so the data path uses the bridge's egress
+        (the hkdis tunnel) instead of a client-side 302 to iCloud. Range supported."""
+        res = ops_of(request).link(id, version)
+        if res.get("local"):
+            return FileResponse(res["path"])   # staged upload; supports Range
+        hdr = {}
+        if request.headers.get("range"):
+            hdr["Range"] = request.headers["range"]
+        up = requests.get(res["url"], headers=hdr, stream=True, timeout=(20, 60))
+        if up.status_code >= 400:
+            up.close()
+            raise HTTPException(status_code=502 if up.status_code >= 500 else up.status_code,
+                                detail=f"iCloud returned {up.status_code}")
+        keep = {k: v for k, v in up.headers.items()
+                if k.lower() in ("content-type", "content-length", "content-range", "accept-ranges")}
+        return StreamingResponse(up.iter_content(1 << 20), status_code=up.status_code,
+                                 headers=keep, background=BackgroundTask(up.close))
 
     @app.post("/v1/mkdir", dependencies=guard)
     def mkdir(request: Request, b: MkdirBody):

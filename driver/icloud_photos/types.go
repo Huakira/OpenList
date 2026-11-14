@@ -49,6 +49,7 @@ func (e entry) toObj() model.Obj {
 			Ctime:    parseTime(e.Created),
 			IsFolder: e.IsDir,
 		},
-		Thumbnail: model.Thumbnail{Thumbnail: e.Thumb},
+		// Thumbnails are not exposed: they would be direct iCloud URLs fetched by the browser.
+		Thumbnail: model.Thumbnail{},
 	}
 }

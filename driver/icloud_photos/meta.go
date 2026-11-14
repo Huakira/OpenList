@@ -17,7 +17,8 @@ var config = driver.Config{
 	LocalSort:   true,
 	DefaultRoot: "root",
 	CheckStatus: true,
-	// PreferProxy deliberately unset: downloads 302 straight to iCloud.
+	// Downloads are always proxied through the bridge (its egress is the hkdis tunnel); no 302.
+	OnlyProxy: true,
 }
 
 func init() {

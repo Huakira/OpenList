@@ -6,6 +6,7 @@ dependencies = [
   "pyicloud==2026.11.2",   # pinned: Apple changes break things; bump deliberately
   "fastapi>=0.115",
   "uvicorn>=0.30",
+  "pysocks>=1.7",          # socks5h egress via the hkdis tunnel
 ]
 
 [project.optional-dependencies]

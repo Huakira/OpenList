@@ -83,18 +83,13 @@ func TestListAndLink(t *testing.T) {
 	if f.GetName() != "IMG_1.HEIC" || f.GetSize() != 7 || f.IsDir() || f.ModTime().Year() != 2001 {
 		t.Fatalf("bad obj %+v", f)
 	}
-	if th, ok := f.(model.Thumb); !ok || th.Thumb() != "https://t/x" {
-		t.Fatal("thumbnail missing")
+	if th, ok := f.(model.Thumb); !ok || th.Thumb() != "" {
+		t.Fatal("thumbnail must not be a direct iCloud URL")
 	}
 
 	l, err := d.Link(ctx, f, model.LinkArgs{})
-	if err != nil || l.URL != "https://cvws.icloud-content.com/s" || l.RangeReader != nil {
-		t.Fatalf("link %+v %v", l, err)
-	}
-
-	l, err = d.Link(ctx, &model.Object{ID: "f|album:L9|pending-1"}, model.LinkArgs{})
 	if err != nil || l.URL != "" || l.RangeReader == nil {
-		t.Fatalf("staged link %+v %v", l, err)
+		t.Fatalf("link must be proxied through the bridge, got %+v %v", l, err)
 	}
 	rc, err := l.RangeReader.RangeRead(ctx, http_range.Range{Start: 2, Length: 3})
 	if err != nil {

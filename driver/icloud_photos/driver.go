@@ -59,18 +59,11 @@ func (d *ICloudPhotos) List(ctx context.Context, dir model.Obj, args model.ListA
 	return out, nil
 }
 
+// Link never hands out an iCloud URL: every byte goes through the bridge, which
+// fetches from iCloud over its own egress (no 302 to the client). OpenList's
+// proxy then serves it, Range included.
 func (d *ICloudPhotos) Link(ctx context.Context, file model.Obj, args model.LinkArgs) (*model.Link, error) {
-	var r linkResp
 	q := url.Values{"id": {file.GetID()}}
-	if err := d.call(ctx, http.MethodGet, "/v1/link", q, nil, &r); err != nil {
-		return nil, err
-	}
-	if !r.Local {
-		// Signed URLs expire: never let OpenList cache them for long.
-		exp := 5 * time.Minute
-		return &model.Link{URL: r.URL, Expiration: &exp}, nil
-	}
-	// Still uploading: stream the staged copy through the bridge.
 	rr := stream.RangeReaderFunc(func(ctx context.Context, hr http_range.Range) (io.ReadCloser, error) {
 		u := strings.TrimRight(d.Address, "/") + "/v1/raw?" + q.Encode()
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)

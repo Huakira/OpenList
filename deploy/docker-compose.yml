@@ -8,12 +8,37 @@ services:
     container_name: icloud-bridge
     restart: unless-stopped
     env_file: .env
+    depends_on:
+      - ssh-socks
     environment:
       - TZ=America/New_York
       - BRIDGE_DATA_DIR=/data
+      # nyc cannot reach icloud.com.cn reliably (lossy CMI route); egress via hkdis.
+      # socks5h: DNS is resolved on the far side too.
+      - HTTPS_PROXY=socks5h://ssh-socks:1080
+      - HTTP_PROXY=socks5h://ssh-socks:1080
+      - NO_PROXY=localhost,127.0.0.1
     volumes:
       - /opt/icloud-photos/data:/data          # session, index.sqlite3, audit.jsonl, staging
       - /opt/icloud-photos/scripts:/app/scripts:ro
+    networks:
+      - openlist_default
+
+  # SOCKS5 on hkdis over SSH, only reachable inside this compose network.
+  # Dedicated key (data/tunnel/id_ed25519), installed on hkdis with `restrict,port-forwarding`.
+  ssh-socks:
+    build: ./tunnel
+    image: icloud-ssh-socks:1
+    container_name: icloud-ssh-socks
+    restart: unless-stopped
+    command: >
+      -N -D 0.0.0.0:1080
+      -i /tunnel/id_ed25519 -o IdentitiesOnly=yes
+      -o UserKnownHostsFile=/tunnel/known_hosts -o StrictHostKeyChecking=yes
+      -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3
+      -p 20322 root@hkdis.20031014.xyz
+    volumes:
+      - /opt/icloud-photos/data/tunnel:/tunnel:ro
     networks:
       - openlist_default
 
