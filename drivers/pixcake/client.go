@@ -37,7 +37,8 @@ var config = driver.Config{
 	LocalSort:   true,
 	OnlyProxy:   false,
 	CheckStatus: true,
-	Alert:       "接口为逆向所得，非官方公开 API；token 过期后需要重新粘贴。",
+	// 前端把 "|" 前面当作提示级别，正文查语言包 drivers.config.PixCake Cloud.alert。
+	Alert: "warning|Reverse-engineered client API, not an official one. Paste a new token when it expires.",
 }
 
 func init() {

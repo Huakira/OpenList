@@ -15,23 +15,27 @@ type Addition struct {
 	// 取值方式有两种：
 	//   1. 直接粘贴 JWT 原文（345 字符左右，形如 eyJhbGciOi...）；
 	//   2. 粘贴本地库里的 tokenV2 密文 + 硬件 UUID，由驱动自行解密。
-	Token string `json:"token" type:"text" required:"false" help:"JWT 原文（eyJ...）。与 token_v2 二选一，优先使用本项。"`
+	//
+	// 管理面板里的字段名和提示文字不读这里的 help 标签，而是查前端语言包
+	// drivers.<驱动名>.<字段>[-tips]；help 只要非空，前端就会显示对应提示。
+	// 语言包见 custom/i18n/，由 custom/patch-frontend.py 在构建时写入前端。
+	Token string `json:"token" type:"text" required:"false" help:"Login JWT (starts with eyJ). Use this OR token_v2 + hardware_uuid."`
 	// TokenV2 是 macOS 客户端 base.db 中 user.tokenV2 字段的十六进制密文。
-	TokenV2 string `json:"token_v2" type:"text" required:"false" help:"tokenV2 十六进制密文，需配合 hardware_uuid 使用。"`
+	TokenV2 string `json:"token_v2" type:"text" required:"false" help:"Hex ciphertext of user.tokenV2 from the macOS client; needs hardware_uuid."`
 	// HardwareUUID 是本机硬件 UUID，tokenV2 的 AES 密钥由它派生。
-	HardwareUUID string `json:"hardware_uuid" type:"string" required:"false" help:"硬件 UUID，例如 0A5C5C7B-80D5-5EFE-8E6D-83C4888BE1BA。system_profiler SPHardwareDataType 可查。"`
+	HardwareUUID string `json:"hardware_uuid" type:"string" required:"false" help:"Hardware UUID of the Mac the token came from (system_profiler SPHardwareDataType)."`
 
 	// SupportAppID 决定能看见哪些项目，客户端默认固定 1。
-	SupportAppID int `json:"support_app_id" type:"number" default:"1" help:"项目所属 app_id，客户端默认 1。"`
+	SupportAppID int `json:"support_app_id" type:"number" default:"1" help:"app_id of the projects; the client always uses 1."`
 
 	// APIBase 允许自建反代，默认官方地址。
-	APIBase string `json:"api_base" type:"string" default:"https://link-api.pixcakeai.com" help:"接口根地址，一般不用改。"`
+	APIBase string `json:"api_base" type:"string" default:"https://link-api.pixcakeai.com" help:"API base URL; normally leave as default."`
 
-	// HiddenForbid 隐藏无权限项目（仅参与的项目里会用到）。
-	ShowTeam bool `json:"show_team" type:"bool" default:"false" help:"是否显示团队项目。"`
+	// ShowTeam 是否列出团队项目。
+	ShowTeam bool `json:"show_team" type:"bool" default:"false" help:"Also list team projects."`
 
 	// RootFolderID 可选：只挂载某个项目（填项目 ID）。
-	RootFolderID string `json:"root_folder_id" type:"string" required:"false" help:"只挂载单个项目时填项目 ID，留空则挂载全部项目。"`
+	RootFolderID string `json:"root_folder_id" type:"string" required:"false" help:"Mount a single project by its ID; empty mounts all projects."`
 }
 
 // 常用时间格式，像素蛋糕后端统一返回带时区的 ISO8601。
