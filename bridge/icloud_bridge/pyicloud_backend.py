@@ -58,12 +58,15 @@ def _retry(fn: Callable[[], T], what: str, attempts: int = 6) -> T:
 
 
 class PyiCloudBackend(PhotosBackend):
-    def __init__(self, apple_id: str, cookie_dir: Path) -> None:
+    def __init__(self, apple_id: str, cookie_dir: Path, china: bool = False) -> None:
         cookie_dir.mkdir(parents=True, exist_ok=True)
-        # No password: the session saved by `icloud-bridge login` is reused.
-        self.api = PyiCloudService(apple_id, cookie_directory=str(cookie_dir))
+        # No password: the session saved by the login step is reused.
+        self.api = PyiCloudService(apple_id, cookie_directory=str(cookie_dir),
+                                   china_mainland=china)
         if self.api.requires_2fa or self.api.requires_2sa:
-            raise BackendError("iCloud session needs 2FA: run `icloud-bridge login`")
+            raise BackendError("no iCloud session yet: fill in the Apple ID and password in "
+                               "the storage settings, then save again with the verification "
+                               "code Apple sends")
         self._photos: dict[str, Any] = {}   # asset id -> PhotoAsset (for URLs, writes)
         self._albums: dict[str, Any] = {}   # album id -> PhotoAlbum
 

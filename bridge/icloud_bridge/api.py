@@ -20,6 +20,7 @@ from . import config
 from .audit import Audit
 from .backend import BackendError, FakeBackend, PhotosBackend
 from .index import Index
+from .login import LoginState
 from .ops import NotFound, OpError, Ops
 
 log = logging.getLogger("icloud_bridge")
@@ -53,11 +54,17 @@ class CleanupBody(BaseModel):
     confirm: bool = False
 
 
+class LoginBody(BaseModel):
+    apple_id: str
+    password: str = ""
+    code: str = ""
+
+
 def make_backend(s: config.Settings) -> PhotosBackend:
     if s.backend == "fake":
         return FakeBackend()
     from .pyicloud_backend import PyiCloudBackend
-    return PyiCloudBackend(s.apple_id, s.cookie_dir)
+    return PyiCloudBackend(s.apple_id, s.cookie_dir, china=s.china)
 
 
 def create_app(settings: config.Settings | None = None,
@@ -65,6 +72,8 @@ def create_app(settings: config.Settings | None = None,
     s = settings or config.load()
     s.data_dir.mkdir(parents=True, exist_ok=True)
     state: dict[str, Any] = {"error": None}
+    login_state = LoginState()
+    sync: dict[str, Any] = {"stop": threading.Event(), "thread": None}
 
     def build_ops() -> Ops:
         return Ops(s, backend or make_backend(s), Index(s.db_path), Audit(s.audit_path))
@@ -80,21 +89,38 @@ def create_app(settings: config.Settings | None = None,
             if stop.wait(s.sync_interval):
                 return
 
+    def start_sync_thread(ops: Ops | None) -> None:
+        if ops is None or not start_sync:
+            return
+        sync["thread"] = threading.Thread(target=sync_loop, args=(ops, sync["stop"]), daemon=True)
+        sync["thread"].start()
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        stop = threading.Event()
+        rebuild()
+        yield
+        sync["stop"].set()
+        if getattr(app.state, "ops", None) is not None:
+            app.state.ops.close()
+
+    def rebuild() -> None:
+        """Build the backend (or replace it after a login). Never raises: a backend
+        that cannot start (no session yet) is reported through /v1/health."""
+        old = getattr(app.state, "ops", None)
+        if old is not None:
+            sync["stop"].set()
+            try:
+                old.close()
+            except Exception:
+                log.exception("closing the previous backend failed")
+            sync["stop"] = threading.Event()
         try:
             app.state.ops = build_ops()
-        except Exception as e:  # e.g. session needs 2FA: stay up and report it
+            state["error"] = None
+        except Exception as e:  # e.g. no session yet: stay up and report it
             app.state.ops = None
             state["error"] = f"{type(e).__name__}: {e}"
-        if app.state.ops is not None and start_sync:
-            threading.Thread(target=sync_loop, args=(app.state.ops, stop),
-                             daemon=True).start()
-        yield
-        stop.set()
-        if app.state.ops is not None:
-            app.state.ops.close()
+        start_sync_thread(app.state.ops)
 
     app = FastAPI(title="icloud-photos-bridge", lifespan=lifespan)
 
@@ -122,7 +148,8 @@ def create_app(settings: config.Settings | None = None,
     def health(request: Request):
         ops = request.app.state.ops
         body = {"ok": ops is not None and state["error"] is None, "error": state["error"],
-                "read_only": s.read_only, "whitelist": s.whitelist}
+                "read_only": s.read_only, "whitelist": s.whitelist,
+                "pending_login": login_state.pending_for()}
         if ops is not None:
             body["last_sync"] = ops.index.get_meta("last_sync")
             try:
@@ -131,10 +158,26 @@ def create_app(settings: config.Settings | None = None,
                 body.update(ok=False, error=f"{type(e).__name__}: {e}")
         return JSONResponse(body, status_code=200 if body["ok"] else 503)
 
+    # Sign-in from OpenList's storage form: save with Apple ID + password, then
+    # save again with the 6-digit code Apple sent to the trusted device.
+    @app.get("/v1/login", dependencies=guard)
+    def login_status():
+        return {"pending_login": login_state.pending_for(), "apple_id": s.apple_id}
+
+    @app.post("/v1/login", dependencies=guard)
+    def login(b: LoginBody):
+        if b.code:
+            login_state.submit(b.apple_id, b.code)
+        elif not login_state.start(b.apple_id, b.password, s.cookie_dir, s.china):
+            return {"ok": False, "needs_2fa": True, "apple_id": b.apple_id.strip()}
+        rebuild()
+        if state["error"]:
+            raise HTTPException(500, state["error"])
+        return {"ok": True, "needs_2fa": False}
+
     @app.get("/v1/list", dependencies=guard)
     def list_(request: Request, id: str = "root"):
         return {"items": [e.as_dict() for e in ops_of(request).list(id)]}
-
     @app.get("/v1/link", dependencies=guard)
     def link(request: Request, id: str, version: str = "original"):
         res = ops_of(request).link(id, version)

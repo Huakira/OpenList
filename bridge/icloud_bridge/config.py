@@ -25,6 +25,7 @@ class Settings:
     test_prefix: str = "__bridge_test_"
     archive_name: str = "__bridge_test_归档"
     show_smart_albums: bool = True
+    china: bool = False             # Apple ID region: China mainland (icloud.com.cn)
     backend: str = "pyicloud"       # "pyicloud" | "fake" (tests, local dev)
     sync_interval: int = 300        # seconds between background refreshes
     root_names: dict[str, str] = field(
@@ -64,6 +65,7 @@ def load() -> Settings:
         test_prefix=os.environ.get("BRIDGE_TEST_PREFIX", "__bridge_test_"),
         archive_name=os.environ.get("BRIDGE_ARCHIVE_NAME", "__bridge_test_归档"),
         show_smart_albums=_bool("BRIDGE_SHOW_SMART_ALBUMS", True),
+        china=_bool("ICLOUD_CHINA", False),
         backend=os.environ.get("BRIDGE_BACKEND", "pyicloud"),
         sync_interval=int(os.environ.get("BRIDGE_SYNC_INTERVAL", "300")),
     )
