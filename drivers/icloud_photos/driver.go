@@ -124,7 +124,7 @@ func (d *ICloudPhotos) ensureSession(ctx context.Context) error {
 	}
 	var r loginResp
 	if err := d.call(ctx, http.MethodPost, "/v1/login", nil, body, &r); err != nil {
-		return fmt.Errorf("iCloud 登录失败：%w", err)
+		return fmt.Errorf("iCloud 登录失败：%w（若提示账号或密码错误，先确认「中国区账号」开关与 Apple ID 地区一致：中国大陆填 icloud.com.cn，其余地区用国际版）", err)
 	}
 	if r.Needs2FA {
 		return askCode

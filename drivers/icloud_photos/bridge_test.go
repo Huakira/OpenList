@@ -112,3 +112,48 @@ func TestExtractBridge(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Region, proxy and smart albums reach the bridge as environment variables, so
+// flipping one has to restart the process; the 2FA step must not.
+func TestOnlyEnvironmentChangesRestartTheBridge(t *testing.T) {
+	var starts int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	}))
+	defer srv.Close()
+	prevHook, prevBridges := startBridgeHook, bridges
+	startBridgeHook = func(ctx context.Context, d *ICloudPhotos) (*bridgeProc, error) {
+		atomic.AddInt32(&starts, 1)
+		return &bridgeProc{baseURL: srv.URL, token: "tok", appleID: d.AppleID}, nil
+	}
+	bridges = map[string]*bridgeProc{}
+	t.Cleanup(func() { startBridgeHook, bridges = prevHook, prevBridges })
+
+	d := &ICloudPhotos{Addition: Addition{AppleID: "a@b.c", DataDir: t.TempDir()}}
+	mustInit := func() {
+		t.Helper()
+		if err := d.Init(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustInit()
+	mustInit() // same config: reused
+	if n := atomic.LoadInt32(&starts); n != 1 {
+		t.Fatalf("same config restarted the bridge %d times", n)
+	}
+	d.TwoFactorCode = "123456" // the 2FA step must keep the process
+	mustInit()
+	if n := atomic.LoadInt32(&starts); n != 1 {
+		t.Fatalf("the 2FA step restarted the bridge (%d starts)", n)
+	}
+	d.China = true // environment change
+	mustInit()
+	if n := atomic.LoadInt32(&starts); n != 2 {
+		t.Fatalf("changing the region did not restart the bridge (%d starts)", n)
+	}
+	d.EgressProxy = "socks5h://127.0.0.1:1080"
+	mustInit()
+	if n := atomic.LoadInt32(&starts); n != 3 {
+		t.Fatalf("changing the proxy did not restart the bridge (%d starts)", n)
+	}
+}

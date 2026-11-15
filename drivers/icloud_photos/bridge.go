@@ -34,10 +34,14 @@ type bridgeProc struct {
 	baseURL string
 	token   string
 	appleID string
-	cmd     *exec.Cmd
-	log     *os.File
-	exit    chan struct{}
-	exited  error
+	// key is the whole config the process was started for (see bridgeKey):
+	// region, proxy and smart albums reach the bridge as environment variables,
+	// so changing one of them has to restart the process.
+	key    string
+	cmd    *exec.Cmd
+	log    *os.File
+	exit   chan struct{}
+	exited error
 }
 
 var (
@@ -49,11 +53,25 @@ var (
 // server instead of spawning Python.
 var startBridgeHook func(ctx context.Context, d *ICloudPhotos) (*bridgeProc, error)
 
+// bridgeKey names the configuration a process was started for. Everything that
+// is handed to the bridge as an environment variable belongs here, otherwise
+// the setting silently keeps the old value until OpenList restarts.
+func bridgeKey(d *ICloudPhotos) string {
+	return strings.Join([]string{
+		d.DataDir,
+		strings.TrimSpace(d.AppleID),
+		"china=" + boolStr(d.China),
+		"smart=" + boolStr(d.ShowSmartAlbums),
+		"proxy=" + strings.TrimSpace(d.EgressProxy),
+	}, "\x00")
+}
+
 func ensureBridge(ctx context.Context, d *ICloudPhotos) (*bridgeProc, error) {
 	bridgeMu.Lock()
 	defer bridgeMu.Unlock()
+	key := bridgeKey(d)
 	if p := bridges[d.DataDir]; p != nil {
-		if p.alive() && p.appleID == d.AppleID {
+		if p.alive() && p.key == key {
 			return p, nil
 		}
 		p.stop()
@@ -67,6 +85,7 @@ func ensureBridge(ctx context.Context, d *ICloudPhotos) (*bridgeProc, error) {
 	if err != nil {
 		return nil, err
 	}
+	p.key = key
 	bridges[d.DataDir] = p
 	return p, nil
 }
