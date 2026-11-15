@@ -1,0 +1,8 @@
+# Third-party libraries for the embedded iCloud bridge (drivers/icloud_photos).
+# The bridge itself is compiled into the OpenList binary, only its dependencies
+# live in the image. Versions are pinned by the bridge repo; keep pyicloud in
+# step with bridge/pyproject.toml.
+pyicloud==2026.11.2
+fastapi>=0.115
+uvicorn>=0.30
+pysocks>=1.7

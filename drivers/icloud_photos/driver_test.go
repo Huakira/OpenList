@@ -58,7 +58,15 @@ func fakeBridge(t *testing.T, seen *[]string) *httptest.Server {
 }
 
 func newDriver(t *testing.T, url string, smart bool) *ICloudPhotos {
-	d := &ICloudPhotos{Addition: Addition{Address: url, Token: "tok", ShowSmartAlbums: smart}}
+	// Point the driver at the fake bridge instead of spawning Python.
+	prevHook, prevBridges := startBridgeHook, bridges
+	startBridgeHook = func(ctx context.Context, d *ICloudPhotos) (*bridgeProc, error) {
+		return &bridgeProc{baseURL: url, token: "tok", appleID: d.AppleID}, nil
+	}
+	bridges = map[string]*bridgeProc{}
+	t.Cleanup(func() { startBridgeHook, bridges = prevHook, prevBridges })
+	d := &ICloudPhotos{Addition: Addition{AppleID: "test@example.com", ShowSmartAlbums: smart,
+		DataDir: t.TempDir()}}
 	if err := d.Init(context.Background()); err != nil {
 		t.Fatal(err)
 	}

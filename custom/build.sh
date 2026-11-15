@@ -10,6 +10,8 @@
 # step needs Docker. The binary is copied into the official -aio image.
 # The frontend is the upstream prebuilt dist plus the labels and tips of our drivers
 # (custom/patch-frontend.py), because the panel reads them from its language pack.
+# The iCloud bridge (Python) is copied into drivers/icloud_photos/bridgefs first and
+# embedded in the binary, so the storage needs no second service.
 set -euo pipefail
 OPENLIST_VERSION="${OPENLIST_VERSION:-v4.2.9}"
 FRONTEND_VERSION="${FRONTEND_VERSION:-$OPENLIST_VERSION}"
@@ -17,8 +19,19 @@ GOARCH="${GOARCH:-amd64}"
 IMAGE="${IMAGE:-openlist-custom:${OPENLIST_VERSION}}"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${OUT:-$HERE/.out}"
+# Private repo checkout of the bridge; only its Python package is needed.
+BRIDGE_SRC="${BRIDGE_SRC:-/opt/icloud-photos}"
 cd "$HERE"
 export GOTOOLCHAIN="${GOTOOLCHAIN:-auto}"
+
+if [ -f "$BRIDGE_SRC/bridge/pyproject.toml" ]; then
+  rm -rf drivers/icloud_photos/bridgefs/icloud_bridge
+  cp -R "$BRIDGE_SRC/bridge/icloud_bridge" drivers/icloud_photos/bridgefs/icloud_bridge
+  find drivers/icloud_photos/bridgefs -name __pycache__ -type d -prune -exec rm -rf {} +
+  echo "embedded bridge from $BRIDGE_SRC"
+elif [ ! -d drivers/icloud_photos/bridgefs/icloud_bridge ]; then
+  echo "warning: $BRIDGE_SRC/bridge not found; the binary will have no embedded bridge" >&2
+fi
 
 go test ./drivers/icloud_photos/ ./drivers/pixcake/
 [ "${1:-}" = test ] && exit 0
@@ -35,7 +48,7 @@ PKG=github.com/OpenListTeam/OpenList/v4/internal/conf
 mkdir -p "$OUT"
 CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" go build -o "$OUT/openlist" -tags=jsoniter -trimpath \
   -ldflags "-s -w -X $PKG.Version=${OPENLIST_VERSION}+custom -X $PKG.WebVersion=$FRONTEND_VERSION -X $PKG.GitCommit=$COMMIT"
-cp custom/Dockerfile "$OUT/Dockerfile"
+cp custom/Dockerfile custom/requirements.txt "$OUT/"
 
 if command -v docker >/dev/null 2>&1; then
   docker build -t "$IMAGE" --build-arg OPENLIST_VERSION="$OPENLIST_VERSION" "$OUT"

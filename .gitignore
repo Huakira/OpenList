@@ -35,3 +35,5 @@ output/
 
 .VSCodeCounter
 *.syso
+# copied by custom/build.sh from the private bridge repo
+drivers/icloud_photos/bridgefs/icloud_bridge/

@@ -26,7 +26,7 @@ func (d *ICloudPhotos) call(ctx context.Context, method, path string, query url.
 }
 
 func (d *ICloudPhotos) do(ctx context.Context, method, path string, query url.Values, body io.Reader, size int64, ctype string, out any) error {
-	u := strings.TrimRight(d.Address, "/") + path
+	u := strings.TrimRight(d.address, "/") + path
 	if len(query) > 0 {
 		u += "?" + query.Encode()
 	}
@@ -37,7 +37,7 @@ func (d *ICloudPhotos) do(ctx context.Context, method, path string, query url.Va
 	if size >= 0 {
 		req.ContentLength = size
 	}
-	req.Header.Set("Authorization", "Bearer "+d.Token)
+	req.Header.Set("Authorization", "Bearer "+d.token)
 	if body != nil {
 		req.Header.Set("Content-Type", ctype)
 	}

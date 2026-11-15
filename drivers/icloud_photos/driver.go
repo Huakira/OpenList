@@ -1,16 +1,22 @@
-// Package icloud_photos is a thin OpenList driver for iCloud Photos.
-// Every rule lives in icloud-photos-bridge; this file only forwards calls.
+// Package icloud_photos is an OpenList driver for iCloud Photos.
+//
+// The iCloud protocol lives in a small Python service (the bridge, pyicloud)
+// that is embedded in the binary and started as a child process on Init; this
+// file only forwards calls to it over HTTP on 127.0.0.1.
 package icloud_photos
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/OpenListTeam/OpenList/v4/internal/conf"
 	"github.com/OpenListTeam/OpenList/v4/internal/driver"
 	"github.com/OpenListTeam/OpenList/v4/internal/errs"
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
@@ -22,27 +28,109 @@ type ICloudPhotos struct {
 	model.Storage
 	Addition
 	client *http.Client
+	// internal: the local bridge this instance talks to, set by Init
+	address string
+	token   string
 }
 
-func (d *ICloudPhotos) Config() driver.Config         { return config }
+func (d *ICloudPhotos) Config() driver.Config           { return config }
 func (d *ICloudPhotos) GetAddition() driver.Additional { return &d.Addition }
 
 func (d *ICloudPhotos) Init(ctx context.Context) error {
-	if d.Address == "" || d.Token == "" {
-		return fmt.Errorf("address and token are required")
+	if strings.TrimSpace(d.AppleID) == "" {
+		return fmt.Errorf("请填写 Apple ID")
 	}
 	if d.RootFolderID == "" {
 		d.RootFolderID = "root"
 	}
+	if strings.TrimSpace(d.DataDir) == "" {
+		d.DataDir = filepath.Join(conf.DataDir, "icloud-photos")
+	}
+	// The bridge runs with this as its working directory; keep it absolute so a
+	// later chdir cannot split session and index across two places.
+	if abs, err := filepath.Abs(d.DataDir); err == nil {
+		d.DataDir = abs
+	}
 	d.client = &http.Client{Timeout: 6 * time.Hour} // uploads of long videos
-	var h map[string]any
-	if err := d.call(ctx, http.MethodGet, "/v1/health", nil, nil, &h); err != nil {
-		return fmt.Errorf("bridge unhealthy: %w", err)
+	p, err := ensureBridge(ctx, d)
+	if err != nil {
+		return err
+	}
+	d.address, d.token = p.baseURL, p.token
+	return d.ensureSession(ctx)
+}
+
+// Drop deliberately leaves the bridge process running: a sign-in waiting for a
+// 2FA code keeps its half-finished state inside that process, and Init runs
+// again between the two saves.
+func (d *ICloudPhotos) Drop(ctx context.Context) error { return nil }
+
+type healthResp struct {
+	OK           bool   `json:"ok"`
+	Error        string `json:"error"`
+	Session      string `json:"session"`
+	PendingLogin string `json:"pending_login"`
+}
+
+type loginResp struct {
+	OK       bool `json:"ok"`
+	Needs2FA bool `json:"needs_2fa"`
+}
+
+func (d *ICloudPhotos) health(ctx context.Context) (*healthResp, error) {
+	c := &http.Client{Timeout: 20 * time.Second}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.address+"/v1/health", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+d.token)
+	res, err := c.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("内置 bridge 无响应: %w", err)
+	}
+	defer res.Body.Close()
+	var h healthResp
+	_ = json.NewDecoder(res.Body).Decode(&h)
+	if res.StatusCode >= 400 && h.Error == "" {
+		h.Error = res.Status
+	}
+	return &h, nil
+}
+
+// ensureSession makes sure the bridge holds a working iCloud session, walking
+// the owner through sign-in from the storage form when it does not:
+// save with Apple ID + password → Apple pushes a code → save again with the code.
+func (d *ICloudPhotos) ensureSession(ctx context.Context) error {
+	h, err := d.health(ctx)
+	if err != nil {
+		return err
+	}
+	if h.OK {
+		return nil
+	}
+	code := strings.TrimSpace(d.TwoFactorCode)
+	askCode := fmt.Errorf("Apple 已向你的设备发送两步验证提示：请把设备上显示的 6 位验证码填进「两步验证码」，再保存一次")
+	switch {
+	case h.PendingLogin != "" && code == "":
+		return askCode
+	case h.PendingLogin == "" && strings.TrimSpace(d.Password) == "":
+		return fmt.Errorf("还没有 iCloud 会话：请填写 Apple ID 和密码后保存，Apple 会推送两步验证")
+	}
+	body := map[string]string{"apple_id": d.AppleID}
+	if h.PendingLogin != "" {
+		body["code"] = code
+	} else {
+		body["password"] = d.Password
+	}
+	var r loginResp
+	if err := d.call(ctx, http.MethodPost, "/v1/login", nil, body, &r); err != nil {
+		return fmt.Errorf("iCloud 登录失败：%w", err)
+	}
+	if r.Needs2FA {
+		return askCode
 	}
 	return nil
 }
-
-func (d *ICloudPhotos) Drop(ctx context.Context) error { return nil }
 
 func (d *ICloudPhotos) List(ctx context.Context, dir model.Obj, args model.ListArgs) ([]model.Obj, error) {
 	var r listResp
@@ -59,19 +147,18 @@ func (d *ICloudPhotos) List(ctx context.Context, dir model.Obj, args model.ListA
 	return out, nil
 }
 
-// Link never hands out an iCloud URL: every byte goes through the bridge, which
-// fetches from iCloud over its own egress (no 302 to the client). OpenList's
-// proxy then serves it, Range included.
 func (d *ICloudPhotos) Link(ctx context.Context, file model.Obj, args model.LinkArgs) (*model.Link, error) {
+	// Always stream through the bridge (OnlyProxy): the bridge's egress is the
+	// one that reaches iCloud, and signed URLs would be fetched by the client.
 	q := url.Values{"id": {file.GetID()}}
 	rr := stream.RangeReaderFunc(func(ctx context.Context, hr http_range.Range) (io.ReadCloser, error) {
-		u := strings.TrimRight(d.Address, "/") + "/v1/raw?" + q.Encode()
+		u := strings.TrimRight(d.address, "/") + "/v1/raw?" + q.Encode()
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 		if err != nil {
 			return nil, err
 		}
 		req.Header = http_range.ApplyRangeToHttpHeader(hr, req.Header)
-		req.Header.Set("Authorization", "Bearer "+d.Token)
+		req.Header.Set("Authorization", "Bearer "+d.token)
 		res, err := d.client.Do(req)
 		if err != nil {
 			return nil, err
@@ -128,14 +215,20 @@ func (d *ICloudPhotos) Put(ctx context.Context, dstDir model.Obj, file model.Fil
 	return e.toObj(), nil
 }
 
-// Other exposes favorite|unfavorite|hide|unhide|recover|purge. File
-// operations can never reach these; they need an explicit /api/fs/other call.
+// Other exposes favorite|unfavorite|hide|unhide|recover|purge, plus refresh
+// (re-read the library) and login (retry the sign-in flow). File operations can
+// never reach these; they need an explicit /api/fs/other call.
 func (d *ICloudPhotos) Other(ctx context.Context, args model.OtherArgs) (interface{}, error) {
 	switch args.Method {
 	case "favorite", "unfavorite", "hide", "unhide", "recover", "purge":
 	case "refresh":
 		var r map[string]any
 		return r, d.call(ctx, http.MethodPost, "/v1/refresh", nil, map[string]string{}, &r)
+	case "login":
+		if err := d.ensureSession(ctx); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
 	default:
 		return nil, errs.NotSupport
 	}
