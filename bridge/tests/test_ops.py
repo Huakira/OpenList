@@ -234,3 +234,15 @@ def test_live_photo_is_read_only_even_without_whitelist(env):
     assert fb.assets[live.id].favorite is False and not fb.assets[live.id].deleted
     # ordinary photos are still writable once the whitelist is off
     ops.other("favorite", file_id("all", d["real"].id))
+
+
+def test_refresh_warms_a_restarted_backend(env):
+    """A fresh process has a fresh index but no in-memory assets: an unchanged
+    token must still warm them, or downloads 404 until the library changes."""
+    ops, fb, d = env
+    warmed: list[str] = []
+    fb._ensure_loaded = lambda why="": warmed.append(why)      # type: ignore[attr-defined]
+    assert ops.refresh() is False
+    assert warmed == ["refresh"]
+    fb.seed_asset("new.jpg")                                    # real change: snapshot path
+    assert ops.refresh() is True and warmed == ["refresh"]

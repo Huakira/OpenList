@@ -100,6 +100,11 @@ class Ops:
         token = self.backend.change_token()
         if not force and token is not None and token == self.index.get_meta("sync_token"):
             self.index.set_meta("last_check", datetime.now(timezone.utc).isoformat())
+            # The index is fresh, but a process that just started has no
+            # in-memory assets yet: warm them so downloads work right away.
+            warm = getattr(self.backend, "_ensure_loaded", None)
+            if warm is not None:
+                warm("refresh")
             return False
         snap = self.backend.snapshot()
         with self._wlock:            # never overwrite the index mid-write

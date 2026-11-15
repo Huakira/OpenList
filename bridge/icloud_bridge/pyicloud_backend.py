@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, TypeVar
@@ -69,10 +70,27 @@ class PyiCloudBackend(PhotosBackend):
                                "code Apple sends")
         self._photos: dict[str, Any] = {}   # asset id -> PhotoAsset (for URLs, writes)
         self._albums: dict[str, Any] = {}   # album id -> PhotoAlbum
+        self._load_lock = threading.Lock()
 
     @property
     def library(self):
         return self.api.photos
+
+    def _ensure_loaded(self, why: str = "") -> None:
+        """Fill the id -> PhotoAsset map used by downloads and writes.
+
+        Only snapshot() builds it, and Ops skips snapshot() when iCloud's change
+        token did not move. On a fresh process the index is still fresh but this
+        map is empty, so downloads would 404 until the library changes: load it
+        on first use instead.
+        """
+        if self._photos:
+            return
+        with self._load_lock:
+            if self._photos:
+                return
+            log.info("loading the library snapshot (%s)", why or "first use")
+            self.snapshot()
 
     # ---------------- reads ----------------
     def snapshot(self) -> Snapshot:
@@ -141,12 +159,18 @@ class PyiCloudBackend(PhotosBackend):
     def download_url(self, asset_id: str, version: str = "original") -> str | None:
         p = self._photos.get(asset_id)
         if p is None:
+            self._ensure_loaded(f"download {asset_id}")
+            p = self._photos.get(asset_id)
+        if p is None:
             return None
         # Signed URLs expire (M0 ②); M1 decides whether to re-query here.
         return p.download_url(version)
 
     def _photo(self, asset_id: str):
         p = self._photos.get(asset_id)
+        if p is None:
+            self._ensure_loaded(f"write {asset_id}")
+            p = self._photos.get(asset_id)
         if p is None:
             raise BackendError(f"asset {asset_id} not in snapshot; refresh first")
         return p
