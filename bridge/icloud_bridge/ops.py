@@ -26,6 +26,7 @@ from .audit import Audit
 from .backend import AlbumRec, AssetRec, BackendError, PhotosBackend
 from .config import Settings
 from .index import Index
+from .thumbs import ThumbCache
 
 SMART_LABELS = {
     "Favorites": "收藏", "Videos": "视频", "Screenshots": "截屏", "Hidden": "已隐藏",
@@ -92,6 +93,7 @@ class Ops:
         self._uploads = ThreadPoolExecutor(max_workers=1, thread_name_prefix="upload")
         self._pending: list[Future] = []
         self.s.staging_dir.mkdir(parents=True, exist_ok=True)
+        self.thumbs = ThumbCache(self.s.thumbs_dir, self.s.thumb_cache_bytes)
 
     # ======================= sync =======================
     def refresh(self, force: bool = False) -> bool:
@@ -176,8 +178,12 @@ class Ops:
                      modified=a.modified.isoformat(), created=a.created.isoformat(),
                      thumb=thumb, status=status)
 
-    def link(self, fid: str, version: str = "original") -> dict:
-        """Fresh signed URL every call; a staged local copy while uploading."""
+    def link(self, fid: str, version: str = "original", refresh: bool = False) -> dict:
+        """Fresh signed URL every call; a staged local copy while uploading.
+
+        refresh=True forces the backend to re-read the asset record, which is what
+        a caller does after iCloud answers 410 to a URL it was just given.
+        """
         _, asset_id = parse_file_id(fid)
         st = self.index.asset_status(asset_id)
         if st is None:
@@ -187,10 +193,29 @@ class Ops:
             if staged and Path(staged).exists():
                 return {"local": True, "path": staged}
             raise NotFound(f"{fid} is {status} and has no staged copy")
-        url = self.backend.download_url(asset_id, version)
+        if refresh:
+            fresh = getattr(self.backend, "force_requery", None)
+            if fresh is not None:
+                fresh(asset_id)
+        fresh_url = getattr(self.backend, "fresh_url", None)
+        url = fresh_url(asset_id, version) if fresh_url else self.backend.download_url(asset_id, version)
         if not url:
             raise NotFound(f"no {version} resource for {fid}")
         return {"local": False, "url": url}
+
+    def cached_thumb(self, fid: str) -> Path | None:
+        """Thumbnail bytes already on disk for this file id, if any."""
+        if self.s.thumb_cache_bytes <= 0:
+            return None
+        _, asset_id = parse_file_id(fid)
+        return self.thumbs.get(asset_id)
+
+    def store_thumb(self, fid: str, data: bytes, content_type: str | None) -> None:
+        """Remember a thumbnail so the next view is a local read."""
+        if self.s.thumb_cache_bytes <= 0:
+            return
+        _, asset_id = parse_file_id(fid)
+        self.thumbs.put(asset_id, data, content_type)
 
     # ======================= guards =======================
     def _writable(self) -> None:

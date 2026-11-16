@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 import requests
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
@@ -65,6 +65,39 @@ def make_backend(s: config.Settings) -> PhotosBackend:
         return FakeBackend()
     from .pyicloud_backend import PyiCloudBackend
     return PyiCloudBackend(s.apple_id, s.cookie_dir, china=s.china)
+
+
+THUMB_CACHE_MAX_BYTES = 8 << 20    # never hold a bigger "thumbnail" in memory
+
+
+def _cache_thumb(up, ops: Ops, fid: str, ctype: str | None, keep: dict[str, str]):
+    """Read a thumbnail into memory, store it, and serve it from there.
+
+    Thumbnails are tens of kB, so buffering is cheaper than a second round trip:
+    the browser sees a normal response and the next view never leaves the disk.
+    A body above THUMB_CACHE_MAX_BYTES is streamed unbuffered instead.
+    """
+    try:
+        length = int(up.headers.get("content-length") or 0)
+    except ValueError:
+        length = 0
+    if length > THUMB_CACHE_MAX_BYTES:
+        return StreamingResponse(up.iter_content(1 << 20), status_code=up.status_code,
+                                 headers=keep, background=BackgroundTask(up.close))
+    try:
+        data = up.raw.read(THUMB_CACHE_MAX_BYTES + 1) if hasattr(up, "raw") else up.content
+    finally:
+        up.close()
+    if len(data) > THUMB_CACHE_MAX_BYTES:
+        return Response(content=data, media_type=ctype or "application/octet-stream",
+                        headers={k: v for k, v in keep.items() if k.lower() != "content-length"})
+    try:
+        ops.store_thumb(fid, data, ctype)
+    except Exception:       # a cache failure must never fail the download
+        log.warning("storing thumbnail for %s failed", fid, exc_info=True)
+    keep.pop("content-length", None)
+    keep.pop("Content-Length", None)
+    return Response(content=data, media_type=ctype or "application/octet-stream", headers=keep)
 
 
 def create_app(settings: config.Settings | None = None,
@@ -192,19 +225,36 @@ def create_app(settings: config.Settings | None = None,
     def raw(request: Request, id: str, version: str = "original"):
         """File bytes through the bridge, so the data path uses the bridge's egress
         (the hkdis tunnel) instead of a client-side 302 to iCloud. Range supported."""
-        res = ops_of(request).link(id, version)
+        ops = ops_of(request)
+        if version == "thumb":
+            # A thumbnail is immutable and tiny: serve the cached copy, so a
+            # gallery scroll does not re-sign a URL per tile.
+            cached = ops.cached_thumb(id)
+            if cached is not None:
+                return FileResponse(cached)
+        res = ops.link(id, version)
         if res.get("local"):
             return FileResponse(res["path"])   # staged upload; supports Range
         hdr = {}
         if request.headers.get("range"):
             hdr["Range"] = request.headers["range"]
         up = requests.get(res["url"], headers=hdr, stream=True, timeout=(20, 60))
+        if up.status_code == 410:
+            # Signed URL died between link() and the fetch (or the record was
+            # cached past its lifetime): ask the backend for a fresh one once.
+            up.close()
+            res = ops_of(request).link(id, version, refresh=True)
+            if res.get("local"):
+                return FileResponse(res["path"])
+            up = requests.get(res["url"], headers=hdr, stream=True, timeout=(20, 60))
         if up.status_code >= 400:
             up.close()
             raise HTTPException(status_code=502 if up.status_code >= 500 else up.status_code,
                                 detail=f"iCloud returned {up.status_code}")
         keep = {k: v for k, v in up.headers.items()
                 if k.lower() in ("content-type", "content-length", "content-range", "accept-ranges")}
+        if version == "thumb" and up.status_code == 200:
+            return _cache_thumb(up, ops, id, up.headers.get("content-type"), keep)
         return StreamingResponse(up.iter_content(1 << 20), status_code=up.status_code,
                                  headers=keep, background=BackgroundTask(up.close))
 

@@ -28,6 +28,7 @@ class Settings:
     china: bool = False             # Apple ID region: China mainland (icloud.com.cn)
     backend: str = "pyicloud"       # "pyicloud" | "fake" (tests, local dev)
     sync_interval: int = 300        # seconds between background refreshes
+    thumb_cache_bytes: int = 512 << 20   # on-disk thumbnail cache cap (0 = off)
     root_names: dict[str, str] = field(
         default_factory=lambda: {
             "all": "全部照片",
@@ -51,6 +52,10 @@ class Settings:
     def staging_dir(self) -> Path:
         return self.data_dir / "staging"
 
+    @property
+    def thumbs_dir(self) -> Path:
+        return self.data_dir / "thumbs"
+
 
 def load() -> Settings:
     token = os.environ.get("BRIDGE_TOKEN", "")
@@ -68,4 +73,5 @@ def load() -> Settings:
         china=_bool("ICLOUD_CHINA", False),
         backend=os.environ.get("BRIDGE_BACKEND", "pyicloud"),
         sync_interval=int(os.environ.get("BRIDGE_SYNC_INTERVAL", "300")),
+        thumb_cache_bytes=int(os.environ.get("BRIDGE_THUMB_CACHE_BYTES", str(512 << 20))),
     )

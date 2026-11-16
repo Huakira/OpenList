@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -36,6 +37,36 @@ T = TypeVar("T")
 # pyicloud deletes albums (flag isDeleted); "forceDelete" removes the record.
 RELATION_REMOVE_MODE = os.environ.get("BRIDGE_RELATION_REMOVE_MODE", "isDeleted")
 SKIP_SMART = {"Library", "Recently Deleted"}
+
+# iCloud signs download URLs with a short lifetime (the `e` query parameter, a
+# unix timestamp; ~15 minutes when observed). The in-memory asset map can live
+# for days, so a URL taken from it goes stale long before the snapshot changes.
+_URL_EXPIRY = re.compile(r"[?&]e=(\d+)")
+# Seconds before expiry at which a record is re-read. Overridable so the refresh
+# path can be exercised on demand (a huge value forces it on every download).
+URL_REFRESH_MARGIN = int(os.environ.get("BRIDGE_URL_REFRESH_MARGIN", "120"))
+
+
+def url_ttl(url: str | None) -> int | None:
+    """Seconds until a signed URL expires, or None when it carries no expiry."""
+    if not url:
+        return None
+    m = _URL_EXPIRY.search(url)
+    return None if m is None else int(m.group(1)) - int(time.time())
+
+
+_URL_LOCKS: dict[str, threading.Lock] = {}
+_URL_LOCKS_GUARD = threading.Lock()
+
+
+def _asset_lock(asset_id: str) -> threading.Lock:
+    """One lock per asset, so two downloads of different assets never queue up."""
+    with _URL_LOCKS_GUARD:
+        lock = _URL_LOCKS.get(asset_id)
+        if lock is None:
+            lock = _URL_LOCKS[asset_id] = threading.Lock()
+        return lock
+
 
 
 def _retry(fn: Callable[[], T], what: str, attempts: int = 6) -> T:
@@ -157,14 +188,56 @@ class PyiCloudBackend(PhotosBackend):
         )
 
     def download_url(self, asset_id: str, version: str = "original") -> str | None:
+        """URL from the cached record. No iCloud round trip: listings call this
+        once per asset, so it must stay cheap. See fresh_url() for downloads."""
         p = self._photos.get(asset_id)
         if p is None:
             self._ensure_loaded(f"download {asset_id}")
             p = self._photos.get(asset_id)
         if p is None:
             return None
-        # Signed URLs expire (M0 ②); M1 decides whether to re-query here.
         return p.download_url(version)
+
+    def fresh_url(self, asset_id: str, version: str = "original") -> str | None:
+        """URL that is guaranteed to be valid now, re-reading the record if needed.
+
+        iCloud signs URLs for ~15 minutes while the in-memory record lives for
+        days, so the cached URL of a photo opened later in the day has long
+        expired and every download would answer 410.
+        """
+        url = self.download_url(asset_id, version)
+        ttl = url_ttl(url)
+        if ttl is not None and ttl > URL_REFRESH_MARGIN:
+            return url
+        fresh = self._requery(asset_id, self._photos.get(asset_id))
+        if fresh is None:
+            return url
+        self._photos[asset_id] = fresh
+        return fresh.download_url(version) or url
+
+    def force_requery(self, asset_id: str) -> None:
+        """Drop the cached record so the next call re-reads it."""
+        with _asset_lock(asset_id):
+            self._photos.pop(asset_id, None)
+
+    def _requery(self, asset_id: str, stale: Any):
+        """Re-read one asset record; None when iCloud will not hand it over.
+
+        One asset lookup by record name (a few seconds), not a library walk, so
+        it is cheap enough to run per download.
+        """
+        with _asset_lock(asset_id):
+            current = self._photos.get(asset_id)
+            if current is not None and current is not stale:
+                ttl = url_ttl(current.download_url("original"))
+                if ttl is not None and ttl > URL_REFRESH_MARGIN:
+                    return current     # another thread already refreshed it
+            try:
+                rec = _retry(lambda: self.library.all.get(asset_id), f"requery {asset_id}")
+            except Exception:
+                log.warning("re-query of %s failed; keeping the cached URL", asset_id, exc_info=True)
+                return None
+            return rec
 
     def _photo(self, asset_id: str):
         p = self._photos.get(asset_id)
