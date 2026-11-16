@@ -137,7 +137,7 @@ class Ops:
         if kind == "root":
             return self._list_root()
         if kind == "folder":
-            return [self._dir_entry(a) for a in self.index.child_albums(ref)]
+            return self._dir_entries(self.index.child_albums(ref), set())
         if kind == "all":
             assets = self.index.all_assets()
         elif kind == "deleted":
@@ -158,11 +158,25 @@ class Ops:
                 if n in SMART_LABELS:
                     out.append(Entry(id=f"smart:{n}", name=SMART_LABELS[n], is_dir=True))
         out.append(Entry(id="deleted", name=self.s.root_names["deleted"], is_dir=True))
-        reserved = {e.name for e in out}
-        for a in self.index.child_albums(None):
+        out.extend(self._dir_entries(self.index.child_albums(None), {e.name for e in out}))
+        return out
+
+    def _dir_entries(self, albums: list[AlbumRec], taken: set[str]) -> list[Entry]:
+        """Directory entries with unique names: iCloud allows several albums (or
+        folders) with one name, and a name clash hides all but one of them. The
+        first holder (lowest id, so the choice is stable) keeps the name, later
+        ones get `name~a3f9`; `taken` is pre-filled with reserved root names."""
+        taken = set(taken)
+        out = []
+        for a in sorted(albums, key=lambda a: (naming.dir_name(a.name), a.id)):
             e = self._dir_entry(a)
-            if e.name in reserved:      # a user album called 全部照片 etc.
-                e.name = f"{e.name}~{naming.short_id(a.id)}"
+            base = e.name
+            if base in taken:
+                for length in (4, 6, 8, 40):
+                    e.name = f"{base}~{naming.short_id(a.id, length)}"
+                    if e.name not in taken:
+                        break
+            taken.add(e.name)
             out.append(e)
         return out
 

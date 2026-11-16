@@ -246,3 +246,15 @@ def test_refresh_warms_a_restarted_backend(env):
     assert warmed == ["refresh"]
     fb.seed_asset("new.jpg")                                    # real change: snapshot path
     assert ops.refresh() is True and warmed == ["refresh"]
+
+
+def test_same_name_albums_are_all_listed(env):
+    ops, fb, d = env
+    twin = fb.seed_album("Trip 2024/25")           # second album with the same name
+    ops.refresh()
+    ops.index.replace_snapshot(fb.snapshot())
+    root = [e.name for e in ops.list("root")]
+    trips = [n for n in root if n.startswith("Trip 2024")]
+    assert len(trips) == 2 and len(set(trips)) == 2
+    assert any("~" in n for n in trips)
+    assert [e.name for e in ops.list("root")] == root       # stable
