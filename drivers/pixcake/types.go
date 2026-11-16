@@ -34,6 +34,9 @@ type Addition struct {
 	// ShowTeam 是否列出团队项目。
 	ShowTeam bool `json:"show_team" type:"bool" default:"false" help:"Also list team projects."`
 
+	// ReadOnly 拒绝所有写操作（建项目、上传、删除）。
+	ReadOnly bool `json:"read_only" type:"bool" default:"false" help:"Refuse every write: create project, upload, delete."`
+
 	// RootFolderID 可选：只挂载某个项目（填项目 ID）。
 	RootFolderID string `json:"root_folder_id" type:"string" required:"false" help:"Mount a single project by its ID; empty mounts all projects."`
 }

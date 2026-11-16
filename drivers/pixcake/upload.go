@@ -33,6 +33,9 @@ import (
 // the new file ID is the commit check. A failed check must never be retried with
 // a new ID automatically, since the first registration may have committed.
 func (d *PixCake) Put(ctx context.Context, dstDir model.Obj, file model.FileStreamer, up driver.UpdateProgress) error {
+	if d.ReadOnly {
+		return errReadOnly
+	}
 	pid, ok := projectIDFromObj(dstDir)
 	if !ok {
 		if dstDir.GetPath() == "" || dstDir.GetPath() == "/" {

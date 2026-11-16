@@ -63,6 +63,8 @@ func bridgeKey(d *ICloudPhotos) string {
 		"china=" + boolStr(d.China),
 		"smart=" + boolStr(d.ShowSmartAlbums),
 		"proxy=" + strings.TrimSpace(d.EgressProxy),
+		"whitelist=" + boolStr(!d.WriteExisting),
+		"readonly=" + boolStr(d.ReadOnly),
 	}, "\x00")
 }
 
@@ -204,6 +206,8 @@ func bridgeEnv(d *ICloudPhotos, srcDir, token string) []string {
 		"ICLOUD_APPLE_ID="+d.AppleID,
 		"BRIDGE_SHOW_SMART_ALBUMS="+boolStr(d.ShowSmartAlbums),
 		"ICLOUD_CHINA="+boolStr(d.China),
+		"BRIDGE_WRITE_WHITELIST="+boolStr(!d.WriteExisting),
+		"BRIDGE_READ_ONLY="+boolStr(d.ReadOnly),
 	)
 	if p := strings.TrimSpace(d.EgressProxy); p != "" {
 		env = append(env, "HTTPS_PROXY="+p, "HTTP_PROXY="+p, "NO_PROXY=localhost,127.0.0.1")

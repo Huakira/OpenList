@@ -193,8 +193,14 @@ func (d *PixCake) Link(ctx context.Context, file model.Obj, args model.LinkArgs)
 	return nil, fmt.Errorf("该图片没有可用的下载地址")
 }
 
+// errReadOnly 是只读模式下所有写操作的统一返回。
+var errReadOnly = errs.NewErr(errs.PermissionDenied, "read-only mode is on for this storage")
+
 // MakeDir 在根目录创建云项目；项目内不支持建子目录。
 func (d *PixCake) MakeDir(ctx context.Context, parentDir model.Obj, dirName string) error {
+	if d.ReadOnly {
+		return errReadOnly
+	}
 	if p := parentDir.GetPath(); p != "" && p != "/" {
 		return errs.NewErr(errs.NotSupport, "像素蛋糕云项目内部不支持创建子目录")
 	}
@@ -212,6 +218,9 @@ func (d *PixCake) MakeDir(ctx context.Context, parentDir model.Obj, dirName stri
 // Remove 删除图片或整个项目。删除项目会连图片一起删，OpenList 会先递归子项，
 // 所以这里对目录直接调项目删除接口即可。
 func (d *PixCake) Remove(ctx context.Context, obj model.Obj) error {
+	if d.ReadOnly {
+		return errReadOnly
+	}
 	if obj.IsDir() {
 		pid, ok := projectIDFromObj(obj)
 		if !ok {

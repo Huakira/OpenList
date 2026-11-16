@@ -1,0 +1,55 @@
+{
+  "fields": {
+    "iCloudPhotos": {
+      "apple_id": "Apple ID",
+      "apple_id-tips": "照片库所属的 Apple ID。",
+      "password": "密码",
+      "password-tips": "仅登录时需要。首次成功后会话已保存，之后可以不管。",
+      "two_factor_code": "两步验证码",
+      "two_factor_code-tips": "第二步：先填 Apple ID 和密码保存一次，Apple 会给你的受信任设备发 6 位验证码；把它填在这里再保存一次。成功后留空即可。",
+      "china": "中国大陆账号",
+      "china-tips": "Apple ID 地区为中国大陆（icloud.com.cn）时勾选。",
+      "proxy": "代理",
+      "proxy-tips": "访问 iCloud 用的代理，如 socks5h://host:1080。留空则沿用容器的代理设置。",
+      "show_smart_albums": "显示智能相簿",
+      "show_smart_albums-tips": "在自建相簿旁边同时列出智能相簿（个人收藏、视频等）。",
+      "write_existing": "允许修改已有相簿",
+      "write_existing-tips": "关闭（默认）：只能修改通过本存储创建的相簿和照片。开启后，也能重命名、移动、归档你已有的相簿和照片。实况照片无论如何都只读；删除始终是归档。",
+      "read_only": "只读模式",
+      "read_only-tips": "拒绝所有写操作（上传、删除、重命名、移动、复制），优先于上一项。",
+      "data_dir": "数据目录",
+      "data_dir-tips": "会话和索引的存放位置，默认 data/icloud-photos。"
+    },
+    "PixCake Cloud": {
+      "token": "令牌（JWT）",
+      "token-tips": "登录 JWT，约 345 个字符，以 eyJ 开头。填这一项即可；不填则改填下面的 Token V2 和硬件 UUID。",
+      "token_v2": "Token V2（密文）",
+      "token_v2-tips": "来自 macOS 客户端数据库的十六进制密文：sqlite3 \"$HOME/Library/Application Support/PixCake-qt_pro/db/base.db\" \"SELECT tokenV2 FROM user ORDER BY login_time DESC LIMIT 1;\"。已填令牌时不用填。",
+      "hardware_uuid": "硬件 UUID",
+      "hardware_uuid-tips": "生成 Token V2 的那台 Mac 的硬件 UUID（system_profiler SPHardwareDataType | grep UUID）。已填令牌时不用填。",
+      "support_app_id": "App ID",
+      "support_app_id-tips": "保持 1 即可，官方客户端固定使用 1。",
+      "api_base": "接口地址",
+      "api_base-tips": "默认是官方地址。只有用反向代理时才需要改；官方接口在国内，海外访问较慢。",
+      "show_team": "显示团队项目",
+      "show_team-tips": "同时列出你以团队成员身份参与的项目。",
+      "root_folder_id": "只挂载单个项目",
+      "root_folder_id-tips": "填项目 ID 则只挂载该项目；留空则挂载全部项目。",
+      "root_folder_path": "根文件夹路径",
+      "read_only": "只读模式",
+      "read_only-tips": "拒绝所有写操作：建项目、上传、删除。"
+    }
+  },
+  "config": {
+    "iCloudPhotos": {
+      "alert": "登录要保存两次：先填 Apple ID 和密码，再填 Apple 发来的 6 位验证码。写入只会动本系统创建的相簿，删除只是归档不会真删，实况照片只读。"
+    },
+    "PixCake Cloud": {
+      "alert": "接口是逆向得到的，不是官方公开 API。令牌过期后需要重新粘贴。"
+    }
+  },
+  "drivers": {
+    "iCloudPhotos": "iCloud 照片",
+    "PixCake Cloud": "像素蛋糕云空间"
+  }
+}

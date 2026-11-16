@@ -1,0 +1,55 @@
+{
+  "fields": {
+    "iCloudPhotos": {
+      "apple_id": "Apple ID",
+      "apple_id-tips": "Apple ID of the account that owns the photo library.",
+      "password": "Password",
+      "password-tips": "Only needed to sign in. After the first success the session is saved and this can be left as is.",
+      "two_factor_code": "2FA code",
+      "two_factor_code-tips": "Step 2: save once with Apple ID + password, Apple then sends a 6-digit code to your trusted device; type it here and save again. Leave empty afterwards.",
+      "china": "China mainland account",
+      "china-tips": "Tick if the Apple ID's region is China mainland (icloud.com.cn).",
+      "proxy": "Proxy",
+      "proxy-tips": "Proxy for the iCloud connection, e.g. socks5h://host:1080. Empty keeps the container's proxy settings.",
+      "show_smart_albums": "Show smart albums",
+      "show_smart_albums-tips": "Also list smart albums (Favorites, Videos, ...) next to your own albums.",
+      "write_existing": "Allow changes to existing albums",
+      "write_existing-tips": "Off (default): only albums and photos created through this storage can be changed. On: you can also rename, move and archive your existing albums and photos. Live Photos stay read-only either way; delete always archives.",
+      "read_only": "Read only",
+      "read_only-tips": "Refuse every write (upload, delete, rename, move, copy). Overrides the option above.",
+      "data_dir": "Data directory",
+      "data_dir-tips": "Where the session and index are kept. Default data/icloud-photos."
+    },
+    "PixCake Cloud": {
+      "token": "Token (JWT)",
+      "token-tips": "Login JWT, about 345 characters starting with eyJ. Fill this, or leave it empty and fill Token V2 + Hardware UUID instead.",
+      "token_v2": "Token V2 (encrypted)",
+      "token_v2-tips": "Hex ciphertext from the macOS client database: sqlite3 \"$HOME/Library/Application Support/PixCake-qt_pro/db/base.db\" \"SELECT tokenV2 FROM user ORDER BY login_time DESC LIMIT 1;\". Not needed if Token is filled.",
+      "hardware_uuid": "Hardware UUID",
+      "hardware_uuid-tips": "UUID of the Mac that produced Token V2 (system_profiler SPHardwareDataType | grep UUID). Not needed if Token is filled.",
+      "support_app_id": "App id",
+      "support_app_id-tips": "Leave as 1; the official client always uses 1.",
+      "api_base": "API base URL",
+      "api_base-tips": "Official endpoint by default. Only change it for a reverse proxy; the official API is in mainland China and is slow from overseas.",
+      "show_team": "Show team projects",
+      "show_team-tips": "Also list projects you only take part in as a team member.",
+      "root_folder_id": "Single project id",
+      "root_folder_id-tips": "Fill a project ID to mount only that project; leave empty to mount all projects.",
+      "root_folder_path": "Root folder path",
+      "read_only": "Read only",
+      "read_only-tips": "Refuse every write: create project, upload, delete."
+    }
+  },
+  "config": {
+    "iCloudPhotos": {
+      "alert": "Sign-in takes two saves: Apple ID + password first, then the 6-digit 2FA code. Writes only touch albums created here; deleting archives a photo instead of removing it; Live Photos are read-only."
+    },
+    "PixCake Cloud": {
+      "alert": "Reverse-engineered client API, not an official one. Paste a new token when it expires."
+    }
+  },
+  "drivers": {
+    "iCloudPhotos": "iCloud Photos",
+    "PixCake Cloud": "PixCake Cloud"
+  }
+}
