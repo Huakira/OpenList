@@ -10,8 +10,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/OpenListTeam/OpenList/v4/internal/conf"
 	"github.com/OpenListTeam/OpenList/v4/internal/errs"
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
+	"github.com/OpenListTeam/OpenList/v4/internal/op"
 	"github.com/OpenListTeam/OpenList/v4/pkg/http_range"
 )
 
@@ -40,6 +42,11 @@ func fakeBridge(t *testing.T, seen *[]string) *httptest.Server {
 				w.Write([]byte(`{"local":false,"url":"https://cvws.icloud-content.com/s"}`))
 			}
 		case "/v1/raw":
+			if strings.Contains(r.URL.RawQuery, "version=thumb") {
+				w.Header().Set("Content-Type", "image/jpeg")
+				w.Write([]byte("thumbbytes"))
+				return
+			}
 			if r.Header.Get("Range") != "bytes=2-4" {
 				t.Errorf("range not forwarded: %q", r.Header.Get("Range"))
 			}
@@ -58,6 +65,10 @@ func fakeBridge(t *testing.T, seen *[]string) *httptest.Server {
 }
 
 func newDriver(t *testing.T, url string, smart bool) *ICloudPhotos {
+	// The driver signs its thumbnail urls from the global settings; seed the
+	// cache so the test does not need an initialised database.
+	op.Cache.SetSetting(conf.LinkExpiration, &model.SettingItem{Key: conf.LinkExpiration, Value: "0"})
+	op.Cache.SetSetting(conf.Token, &model.SettingItem{Key: conf.Token, Value: "test-token"})
 	// Point the driver at the fake bridge instead of spawning Python.
 	prevHook, prevBridges := startBridgeHook, bridges
 	startBridgeHook = func(ctx context.Context, d *ICloudPhotos) (*bridgeProc, error) {
@@ -80,7 +91,7 @@ func TestListAndLink(t *testing.T) {
 	d := newDriver(t, srv.URL, false)
 	ctx := context.Background()
 
-	objs, err := d.List(ctx, &model.Object{ID: "root"}, model.ListArgs{})
+	objs, err := d.List(ctx, &model.Object{ID: "root"}, model.ListArgs{ReqPath: "/photos/album"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,8 +102,16 @@ func TestListAndLink(t *testing.T) {
 	if f.GetName() != "IMG_1.HEIC" || f.GetSize() != 7 || f.IsDir() || f.ModTime().Year() != 2001 {
 		t.Fatalf("bad obj %+v", f)
 	}
-	if th, ok := f.(model.Thumb); !ok || th.Thumb() != "" {
-		t.Fatal("thumbnail must not be a direct iCloud URL")
+	th, ok := f.(model.Thumb)
+	if !ok {
+		t.Fatal("file must expose a thumbnail")
+	}
+	if got := th.Thumb(); !strings.HasPrefix(got, "/d/photos/album/IMG_1.HEIC?") ||
+		!strings.Contains(got, "type=thumb") || !strings.Contains(got, "sign=") {
+		t.Fatalf("thumbnail must be a local /d url, got %q", got)
+	}
+	if objs[0].(model.Thumb).Thumb() != "" {
+		t.Fatal("a folder has no thumbnail")
 	}
 
 	l, err := d.Link(ctx, f, model.LinkArgs{})
@@ -107,6 +126,23 @@ func TestListAndLink(t *testing.T) {
 	rc.Close()
 	if string(b) != "cde" {
 		t.Fatalf("raw %q", b)
+	}
+
+	tl, err := d.Link(ctx, f, model.LinkArgs{Type: "thumb"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tl.ContentLength != int64(len("thumbbytes")) || tl.RangeReader == nil {
+		t.Fatalf("bad thumb link %+v", tl)
+	}
+	tr, err := tl.RangeReader.RangeRead(ctx, http_range.Range{Start: 0, Length: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tb, _ := io.ReadAll(tr)
+	tr.Close()
+	if string(tb) != "thumbbytes" {
+		t.Fatalf("thumb %q", tb)
 	}
 }
 

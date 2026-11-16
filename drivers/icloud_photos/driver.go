@@ -6,6 +6,7 @@
 package icloud_photos
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -142,12 +143,81 @@ func (d *ICloudPhotos) List(ctx context.Context, dir model.Obj, args model.ListA
 		if !d.ShowSmartAlbums && strings.HasPrefix(e.ID, "smart:") {
 			continue
 		}
-		out = append(out, e.toObj())
+		out = append(out, objWithThumb(ctx, e, args.ReqPath))
 	}
 	return out, nil
 }
 
+// maxThumbBytes caps one thumbnail held in memory: iCloud serves tens of kB,
+// a "thumbnail" in the megabytes means the asset record pointed elsewhere.
+const maxThumbBytes = 8 << 20
+
+// thumb reads a thumbnail through the bridge, which caches the bytes on disk
+// after the first fetch. It is buffered because the size has to be known before
+// the response starts (the original file size would truncate the body).
+func (d *ICloudPhotos) thumb(ctx context.Context, id string) ([]byte, string, error) {
+	q := url.Values{"id": {id}, "version": {"thumb"}}
+	u := strings.TrimRight(d.address, "/") + "/v1/raw?" + q.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+d.token)
+	res, err := d.client.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer res.Body.Close()
+	if res.StatusCode >= 400 {
+		return nil, "", fmt.Errorf("bridge thumb: %s", res.Status)
+	}
+	data, err := io.ReadAll(io.LimitReader(res.Body, maxThumbBytes+1))
+	if err != nil {
+		return nil, "", err
+	}
+	if len(data) > maxThumbBytes {
+		return nil, "", fmt.Errorf("bridge thumb: %d bytes is larger than the thumbnail limit", len(data))
+	}
+	if len(data) == 0 {
+		return nil, "", errs.NotSupport
+	}
+	// The bridge serves a cached thumbnail as a plain file, so it often knows
+	// no type at all; leave it empty and let the response fall back to the
+	// asset's own extension.
+	ctype := res.Header.Get("Content-Type")
+	if ctype == "application/octet-stream" {
+		ctype = ""
+	}
+	return data, ctype, nil
+}
+
 func (d *ICloudPhotos) Link(ctx context.Context, file model.Obj, args model.LinkArgs) (*model.Link, error) {
+	if args.Type == "thumb" {
+		data, ctype, err := d.thumb(ctx, file.GetID())
+		if err != nil {
+			return nil, err
+		}
+		size := int64(len(data))
+		rr := stream.RangeReaderFunc(func(ctx context.Context, hr http_range.Range) (io.ReadCloser, error) {
+			start := hr.Start
+			if start < 0 {
+				start = 0
+			}
+			if start > size {
+				start = size
+			}
+			length := hr.Length
+			if length < 0 || start+length > size {
+				length = size - start
+			}
+			return io.NopCloser(io.NewSectionReader(bytes.NewReader(data), start, length)), nil
+		})
+		link := &model.Link{ContentLength: size, RangeReader: rr}
+		if ctype != "" {
+			link.Header = http.Header{"Content-Type": []string{ctype}}
+		}
+		return link, nil
+	}
 	// Always stream through the bridge (OnlyProxy): the bridge's egress is the
 	// one that reaches iCloud, and signed URLs would be fetched by the client.
 	q := url.Values{"id": {file.GetID()}}
