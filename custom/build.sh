@@ -19,8 +19,8 @@ GOARCH="${GOARCH:-amd64}"
 IMAGE="${IMAGE:-openlist-custom:${OPENLIST_VERSION}}"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${OUT:-$HERE/.out}"
-# Private repo checkout of the bridge; only its Python package is needed.
-BRIDGE_SRC="${BRIDGE_SRC:-/opt/icloud-photos}"
+# The bridge source lives in this repo (custom/icloud-photos); only its Python package is copied.
+BRIDGE_SRC="${BRIDGE_SRC:-$HERE/custom/icloud-photos}"
 cd "$HERE"
 export GOTOOLCHAIN="${GOTOOLCHAIN:-auto}"
 

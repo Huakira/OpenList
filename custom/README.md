@@ -23,12 +23,14 @@ The frontend patch exists because the admin panel does not read a driver's Go
 ## Build
 
 ```bash
-BRIDGE_SRC=/opt/icloud-photos custom/build.sh        # test + compile (+ docker build)
-BRIDGE_SRC=/opt/icloud-photos custom/build.sh test   # only go test
+custom/build.sh        # test + compile (+ docker build)
+custom/build.sh test   # only go test
 ```
 
-- `BRIDGE_SRC` is the private bridge checkout; only `bridge/icloud_bridge` is
-  copied in, and `.gitignore` keeps it out of this repo.
+- The bridge source is `custom/icloud-photos/bridge` (merged from the former
+  `icloud-photos-openlist` repo, history kept). The build copies only
+  `bridge/icloud_bridge` into `bridgefs/`; `.gitignore` keeps that copy out of
+  git. `BRIDGE_SRC` overrides the source directory.
 - The binary is a static cross-build, so it can be compiled on a machine with
   Go; the last step (`docker build`) needs Docker. On nyc (no Go, little disk)
   the binary is built elsewhere and copied with `Dockerfile` + `requirements.txt`
