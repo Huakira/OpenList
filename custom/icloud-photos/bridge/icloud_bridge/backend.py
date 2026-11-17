@@ -11,6 +11,7 @@ import hashlib
 import itertools
 import threading
 from abc import ABC, abstractmethod
+from typing import Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,6 +45,25 @@ class Snapshot:
     albums: list[AlbumRec]
     memberships: dict[str, list[str]]          # album_id -> asset ids
     smart: dict[str, list[str]] = field(default_factory=dict)  # smart name -> ids
+
+
+@dataclass
+class Changes:
+    """What moved in the library since a sync token (CloudKit zone changes)."""
+    token: str
+    upserts: list[AssetRec] = field(default_factory=list)   # new or changed assets
+    removed: list[str] = field(default_factory=list)        # asset ids gone for good
+    member_add: list[tuple[str, str]] = field(default_factory=list)   # (album id, asset id)
+    member_del: list[tuple[str, str]] = field(default_factory=list)
+    albums: list[AlbumRec] = field(default_factory=list)    # new or renamed albums/folders
+    albums_gone: list[str] = field(default_factory=list)
+
+
+@dataclass
+class Known:
+    """What the index already holds: lets changes() place a tombstone."""
+    asset: Callable[[str], bool]
+    album: Callable[[str], bool]
 
 
 class PhotosBackend(ABC):
@@ -81,6 +101,11 @@ class PhotosBackend(ABC):
         """Cheap token that changes whenever the library changes; None = unknown."""
         return None
 
+    def changes(self, since: str, known: Known | None = None) -> Changes | None:
+        """Incremental update since `since`. None = cannot say (album changes,
+        too many changes, unsupported): the caller falls back to snapshot()."""
+        return None
+
     def health(self) -> dict:
         return {"session": "ok"}
 
@@ -104,6 +129,9 @@ class FakeBackend(PhotosBackend):
         self.files_dir = files_dir
         self.version = 0                 # bumps on every change, like a sync token
         self.snapshots = 0
+        self.incremental = False         # True: changes() answers instead of None
+        self.log: list[tuple[int, str, str]] = []   # (version, kind, id) kind: asset|removed|album
+        self.change_calls = 0
 
     def _id(self, prefix: str) -> str:
         return f"{prefix}{next(self._ids):04d}"
@@ -122,6 +150,7 @@ class FakeBackend(PhotosBackend):
         self.assets[rec.id] = rec
         self.blobs[rec.id] = data
         self.version += 1
+        self.log.append((self.version, "asset", rec.id))
         return rec
 
     def seed_album(self, name: str, parent_id: str | None = None,
@@ -131,11 +160,34 @@ class FakeBackend(PhotosBackend):
         self.albums[rec.id] = rec
         self.members[rec.id] = []
         self.version += 1
+        self.log.append((self.version, "album", rec.id))
         return rec
+
+    def remove_asset(self, asset_id: str) -> None:
+        """Test helper: the asset vanishes from iCloud for good."""
+        self.assets.pop(asset_id, None)
+        self.version += 1
+        self.log.append((self.version, "removed", asset_id))
 
     # --- PhotosBackend ---
     def change_token(self) -> str | None:
         return f"v{self.version}"
+
+    def changes(self, since: str, known: Known | None = None) -> Changes | None:
+        self.change_calls += 1
+        if not self.incremental or not since.startswith("v"):
+            return None
+        start = int(since[1:])
+        entries = [e for e in self.log if e[0] > start]
+        if any(kind == "album" for _, kind, _ in entries):
+            return None
+        out = Changes(token=f"v{self.version}")
+        for _, kind, aid in entries:
+            if kind == "removed":
+                out.removed.append(aid)
+            elif aid in self.assets and all(u.id != aid for u in out.upserts):
+                out.upserts.append(self.assets[aid])
+        return out
 
     def snapshot(self) -> Snapshot:
         self.snapshots += 1
@@ -162,20 +214,24 @@ class FakeBackend(PhotosBackend):
 
     def rename_album(self, album_id: str, name: str) -> None:
         self._maybe_fail("rename_album")
+        self.log.append((self.version, "album", ""))
         self.albums[album_id] = replace(self.albums[album_id], name=name)
 
     def delete_album(self, album_id: str) -> None:
         self._maybe_fail("delete_album")
+        self.log.append((self.version, "album", ""))
         self.albums.pop(album_id)
         self.members.pop(album_id, None)
 
     def add_to_album(self, asset_id: str, album_id: str) -> None:
         self._maybe_fail("add_to_album")
+        self.log.append((self.version, "album", ""))
         if asset_id not in self.members[album_id]:
             self.members[album_id].append(asset_id)
 
     def remove_from_album(self, asset_id: str, album_id: str) -> None:
         self._maybe_fail("remove_from_album")
+        self.log.append((self.version, "album", ""))
         if asset_id in self.members[album_id]:
             self.members[album_id].remove(asset_id)
 
@@ -189,3 +245,4 @@ class FakeBackend(PhotosBackend):
         if flag not in {"favorite", "hidden", "deleted"}:
             raise BackendError(f"unknown flag {flag}")
         self.assets[asset_id] = replace(self.assets[asset_id], **{flag: value})
+        self.log.append((self.version, "asset", asset_id))

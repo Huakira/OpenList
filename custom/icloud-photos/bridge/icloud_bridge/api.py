@@ -119,7 +119,8 @@ def create_app(settings: config.Settings | None = None,
             except Exception as e:   # surfaced by /v1/health
                 state["error"] = f"{type(e).__name__}: {e}"
                 log.exception("refresh failed")
-            if stop.wait(s.sync_interval):
+            # After a failure try again soon instead of waiting a full interval.
+            if stop.wait(min(30, s.sync_interval) if state["error"] else s.sync_interval):
                 return
 
     def start_sync_thread(ops: Ops | None) -> None:
@@ -149,6 +150,8 @@ def create_app(settings: config.Settings | None = None,
             sync["stop"] = threading.Event()
         try:
             app.state.ops = build_ops()
+            app.state.ops.on_refresh = lambda e: state.__setitem__(
+                "error", None if e is None else f"{type(e).__name__}: {e}")
             state["error"] = None
         except Exception as e:  # e.g. no session yet: stay up and report it
             app.state.ops = None
@@ -210,7 +213,9 @@ def create_app(settings: config.Settings | None = None,
 
     @app.get("/v1/list", dependencies=guard)
     def list_(request: Request, id: str = "root"):
-        return {"items": [e.as_dict() for e in ops_of(request).list(id)]}
+        ops = ops_of(request)
+        ops.freshen()
+        return {"items": [e.as_dict() for e in ops.list(id)]}
     @app.get("/v1/link", dependencies=guard)
     def link(request: Request, id: str, version: str = "original"):
         res = ops_of(request).link(id, version)

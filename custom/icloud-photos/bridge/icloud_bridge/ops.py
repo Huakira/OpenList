@@ -11,6 +11,7 @@ Directory keys          File ids
 
 from __future__ import annotations
 
+import logging
 import shutil
 import threading
 import time
@@ -23,10 +24,12 @@ from typing import BinaryIO, Callable
 
 from . import naming
 from .audit import Audit
-from .backend import AlbumRec, AssetRec, BackendError, PhotosBackend
+from .backend import AlbumRec, AssetRec, BackendError, Known, PhotosBackend
 from .config import Settings
 from .index import Index
 from .thumbs import ThumbCache
+
+log = logging.getLogger(__name__)
 
 SMART_LABELS = {
     "Favorites": "收藏", "Videos": "视频", "Screenshots": "截屏", "Hidden": "已隐藏",
@@ -89,31 +92,110 @@ class Ops:
         self.backend = backend
         self.index = index
         self.audit = audit
-        self._wlock = threading.Lock()          # one write at a time (3.4)
+        self._wlock = threading.Lock()
+        self._fresh_lock = threading.Lock()
+        self._inflight: threading.Event | None = None
+        self._last_try = float("-inf")          # one write at a time (3.4)
         self._uploads = ThreadPoolExecutor(max_workers=1, thread_name_prefix="upload")
         self._pending: list[Future] = []
         self.s.staging_dir.mkdir(parents=True, exist_ok=True)
         self.thumbs = ThumbCache(self.s.thumbs_dir, self.s.thumb_cache_bytes)
 
     # ======================= sync =======================
+    def freshen(self) -> None:
+        """Called when someone opens a directory: make sure the index is not
+        older than settings.fresh_max_age, instead of polling around the clock.
+        Waits at most settings.fresh_wait seconds; a slower refresh (a full
+        re-read) keeps running in the background and the stale index is served."""
+        with self._fresh_lock:
+            ev = self._inflight
+            if ev is None:
+                if time.monotonic() - self._last_try < self.s.fresh_max_age:
+                    return
+                self._last_try = time.monotonic()
+                ev = self._inflight = threading.Event()
+
+                def run() -> None:
+                    try:
+                        self.refresh()
+                        self.on_refresh(None)
+                    except Exception as e:
+                        log.warning("refresh failed: %s", e)
+                        self.on_refresh(e)
+                    finally:
+                        with self._fresh_lock:
+                            self._inflight = None
+                            self._last_try = time.monotonic()
+                        ev.set()
+                threading.Thread(target=run, daemon=True).start()
+        ev.wait(self.s.fresh_wait)
+
+    def on_refresh(self, err: Exception | None) -> None:
+        """Hook for the API layer to surface refresh errors."""
+
     def refresh(self, force: bool = False) -> bool:
-        """Re-read the library only when iCloud's change token moved.
+        """Bring the index up to date. Cheap when nothing moved; applies just the
+        changed records when iCloud can list them; otherwise re-reads everything.
         Returns True when a full snapshot was taken."""
         token = self.backend.change_token()
-        if not force and token is not None and token == self.index.get_meta("sync_token"):
-            self.index.set_meta("last_check", datetime.now(timezone.utc).isoformat())
-            # The index is fresh, but a process that just started has no
-            # in-memory assets yet: warm them so downloads work right away.
-            warm = getattr(self.backend, "_ensure_loaded", None)
-            if warm is not None:
-                warm("refresh")
+        stored = self.index.get_meta("sync_token")
+        now = datetime.now(timezone.utc)
+        if not force and token is not None and token == stored:
+            self.index.set_meta("last_check", now.isoformat())
             return False
+        if not force and token is not None and stored and self._reconciled_recently(now):
+            ch = self.backend.changes(stored, Known(lambda i: self.index.asset(i) is not None,
+                                                    lambda i: self.index.album(i) is not None))
+            if ch is not None:
+                with self._wlock:        # never overwrite the index mid-write
+                    self._apply(ch)
+                    self.index.set_meta("sync_token", ch.token)
+                self.index.set_meta("last_check", now.isoformat())
+                self.index.set_meta("last_sync", now.isoformat())
+                return False
         snap = self.backend.snapshot()
-        with self._wlock:            # never overwrite the index mid-write
+        with self._wlock:
             self.index.replace_snapshot(snap)
             if token is not None:
                 self.index.set_meta("sync_token", token)
+            self.index.set_meta("last_full", now.isoformat())
         return True
+
+    def _reconciled_recently(self, now: datetime) -> bool:
+        """Smart albums other than the ones _apply maintains only change through a
+        full read, so do one every reconcile_interval while changes keep coming."""
+        last = self.index.get_meta("last_full")
+        if not last:
+            return False
+        try:
+            age = (now - datetime.fromisoformat(last)).total_seconds()
+        except ValueError:
+            return False
+        return age < self.s.reconcile_interval
+
+    def _apply(self, ch) -> None:
+        for alb in ch.albums_gone:
+            self.index.drop_album(alb)
+            self.backend.forget_album(alb) if hasattr(self.backend, "forget_album") else None
+        for alb in ch.albums:
+            self.index.put_album(alb)
+            self.backend.forget_album(alb.id) if hasattr(self.backend, "forget_album") else None
+        for aid in ch.removed:
+            self.index.delete_asset(aid)
+        for a in ch.upserts:
+            self.index.put_asset(a)
+            live = not a.deleted
+            self.index.set_smart("Favorites", a.id, a.favorite and live)
+            self.index.set_smart("Hidden", a.id, a.hidden and live)
+            self.index.set_smart("Videos", a.id, a.item_type == "movie" and live)
+            self.index.set_smart("Live", a.id, a.live and live)
+        for alb, aid in ch.member_add:
+            for i in (aid, aid + "~raw"):
+                if self.index.asset(i) is not None:
+                    self.index.add_member(alb, i)
+        for alb, aid in ch.member_del:
+            for i in (aid, aid + "~raw"):
+                self.index.remove_member(alb, i)
 
     # ======================= reads =======================
     def kind(self, key: str) -> tuple[str, str]:
@@ -187,7 +269,9 @@ class Ops:
     def _file_entry(self, key: str, a: AssetRec, name: str) -> Entry:
         st = self.index.asset_status(a.id)
         status = st[0] if st else "ready"
-        thumb = "" if status != "ready" else (self.backend.download_url(a.id, "thumb") or "")
+        # The driver only checks that a thumbnail exists and fetches it through
+        # /v1/raw, so no iCloud URL (and no backend call) is needed per entry.
+        thumb = "" if status != "ready" else f"/v1/raw?id={file_id(key, a.id)}&version=thumb"
         return Entry(id=file_id(key, a.id), name=name, is_dir=False, size=a.size,
                      modified=a.modified.isoformat(), created=a.created.isoformat(),
                      thumb=thumb, status=status)
@@ -239,6 +323,8 @@ class Ops:
     def _need_asset(self, asset_id: str) -> None:
         # Live Photos are read-only for good: the still and its paired video must
         # stay together, and this check does not depend on the whitelist.
+        if asset_id.endswith("~raw"):
+            raise Forbidden(f"{asset_id} is the RAW half of a photo and is read-only")
         rec = self.index.asset(asset_id)
         if rec is not None and rec.live:
             raise Forbidden(f"live photo {asset_id} is read-only")

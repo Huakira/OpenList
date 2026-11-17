@@ -27,7 +27,10 @@ class Settings:
     show_smart_albums: bool = True
     china: bool = False             # Apple ID region: China mainland (icloud.com.cn)
     backend: str = "pyicloud"       # "pyicloud" | "fake" (tests, local dev)
-    sync_interval: int = 300        # seconds between background refreshes
+    sync_interval: int = 300        # safety-net background refresh; directory views refresh on demand
+    fresh_max_age: float = 5.0      # a directory view re-checks iCloud when the index is older than this
+    fresh_wait: float = 4.0         # ...and waits at most this long for it before serving what it has
+    reconcile_interval: int = 1800  # seconds between full re-reads while changes keep arriving
     thumb_cache_bytes: int = 512 << 20   # on-disk thumbnail cache cap (0 = off)
     root_names: dict[str, str] = field(
         default_factory=lambda: {
@@ -73,5 +76,8 @@ def load() -> Settings:
         china=_bool("ICLOUD_CHINA", False),
         backend=os.environ.get("BRIDGE_BACKEND", "pyicloud"),
         sync_interval=int(os.environ.get("BRIDGE_SYNC_INTERVAL", "300")),
+        fresh_max_age=float(os.environ.get("BRIDGE_FRESH_MAX_AGE", "5")),
+        fresh_wait=float(os.environ.get("BRIDGE_FRESH_WAIT", "4")),
+        reconcile_interval=int(os.environ.get("BRIDGE_RECONCILE_INTERVAL", "1800")),
         thumb_cache_bytes=int(os.environ.get("BRIDGE_THUMB_CACHE_BYTES", str(512 << 20))),
     )

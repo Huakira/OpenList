@@ -209,6 +209,21 @@ class Index:
         with self._lock, self.db:
             self.db.execute(f"UPDATE assets SET {flag}=? WHERE id=?", (int(value), asset_id))
 
+    def delete_asset(self, asset_id: str) -> None:
+        """Forget an asset that is gone from iCloud (not the archive move)."""
+        with self._lock, self.db:
+            for table, col in (("assets", "id"), ("members", "asset_id"),
+                               ("smart", "asset_id"), ("names", "asset_id")):
+                self.db.execute(f"DELETE FROM {table} WHERE {col}=?", (asset_id,))
+
+    def set_smart(self, name: str, asset_id: str, present: bool) -> None:
+        with self._lock, self.db:
+            if present:
+                self.db.execute("INSERT OR IGNORE INTO smart VALUES (?,?)", (name, asset_id))
+            else:
+                self.db.execute("DELETE FROM smart WHERE name=? AND asset_id=?",
+                                (name, asset_id))
+
     def put_album(self, a: AlbumRec) -> None:
         with self._lock, self.db:
             self.db.execute("INSERT OR REPLACE INTO albums VALUES (?,?,?,?)",

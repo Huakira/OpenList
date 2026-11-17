@@ -12,14 +12,18 @@ import os
 import re
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 from urllib.parse import urlencode
 
+import requests
 from pyicloud import PyiCloudService
+from pyicloud.common.cloudkit import CKZoneChangesZoneReq, CKZoneIDReq
 from pyicloud.const import CONTENT_TYPE, CONTENT_TYPE_TEXT
 from pyicloud.services.photos.exceptions import PhotosApiError, PhotosRateLimited, PhotosServiceException
 from pyicloud.services.photos.mappers import (
+    decode_encrypted_text,
     record_change_tag,
     record_field_value,
     record_name,
@@ -28,7 +32,7 @@ from pyicloud.services.photos.mappers import (
 )
 from pyicloud.services.photos.service import PhotoAlbumFolder, SmartPhotoAlbum
 
-from .backend import AlbumRec, AssetRec, BackendError, PhotosBackend, Snapshot
+from .backend import AlbumRec, AssetRec, BackendError, Changes, Known, PhotosBackend, Snapshot
 
 log = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -37,6 +41,19 @@ T = TypeVar("T")
 # pyicloud deletes albums (flag isDeleted); "forceDelete" removes the record.
 RELATION_REMOVE_MODE = os.environ.get("BRIDGE_RELATION_REMOVE_MODE", "isDeleted")
 SKIP_SMART = {"Library", "Recently Deleted"}
+# A RAW+JPEG shot is one iCloud record: the JPEG is the "original" resource and
+# the RAW sits in "alternative". The RAW is listed as its own read-only entry
+# whose id is the photo's id plus this suffix.
+RAW_SUFFIX = "~raw"
+ROOT_FOLDER = "----Root-Folder----"
+_NOT_RAW = {".jpg", ".jpeg", ".heic", ".heif", ".png", ".mov", ".mp4", ".m4v"}
+
+
+def _split_raw(asset_id: str, version: str) -> tuple[str, str]:
+    """(real asset id, resource version) for an id that may be a RAW entry."""
+    if asset_id.endswith(RAW_SUFFIX):
+        return asset_id[: -len(RAW_SUFFIX)], "alternative" if version == "original" else version
+    return asset_id, version
 
 # iCloud signs download URLs with a short lifetime (the `e` query parameter, a
 # unix timestamp; ~15 minutes when observed). The in-memory asset map can live
@@ -69,24 +86,58 @@ def _asset_lock(asset_id: str) -> threading.Lock:
 
 
 
+def _is_network(e: BaseException) -> bool:
+    """A timeout or dropped connection (pyicloud wraps these in PhotosApiError)."""
+    cause = e.__cause__ or e.__context__
+    return (isinstance(e, requests.RequestException) or isinstance(cause, requests.RequestException)
+            or "Request failed to iCloud" in str(e))
+
+
 def _retry(fn: Callable[[], T], what: str, attempts: int = 6) -> T:
-    """Back off on 429 and ZONE_BUSY (plan 3.4)."""
+    """Back off on 429, ZONE_BUSY (plan 3.4) and network timeouts."""
     delay = 2.0
+    net = 0
     for i in range(attempts):
         try:
             return fn()
         except PhotosRateLimited as e:
             wait = e.retry_after or delay
         except PhotosApiError as e:
-            if "ZONE_BUSY" not in str(e) and "ZONE_BUSY" not in str(e.payload):
+            if _is_network(e):
+                net += 1
+                wait = delay
+            elif "ZONE_BUSY" not in str(e) and "ZONE_BUSY" not in str(e.payload):
                 raise
+            else:
+                wait = delay
+        except requests.RequestException:
+            net += 1
             wait = delay
+        if net > 3:
+            raise BackendError(f"{what}: iCloud unreachable (network errors)")
         if i == attempts - 1:
             break
-        log.warning("%s: iCloud busy, retry in %.0fs", what, wait)
+        log.warning("%s: iCloud busy or slow, retry in %.0fs", what, wait)
         time.sleep(wait)
         delay = min(delay * 2, 60)
     raise BackendError(f"{what}: iCloud still busy after {attempts} attempts")
+
+
+def _name_and_type(rec) -> tuple[str | None, str | None]:
+    """(recordName, recordType) of a change record. A tombstone (typed
+    CKTombstoneRecord or a bare dict) has no type: that is what marks it."""
+    if isinstance(rec, dict):
+        return rec.get("recordName"), rec.get("recordType")
+    return getattr(rec, "recordName", None), getattr(rec, "recordType", None)
+
+
+def _flag(record: Any, name: str) -> bool:
+    """CloudKit flags come as 0/1 ints or "0"/"1" strings."""
+    v = record_field_value(record, name)
+    try:
+        return int(v or 0) != 0
+    except (TypeError, ValueError):
+        return bool(v)
 
 
 class PyiCloudBackend(PhotosBackend):
@@ -107,21 +158,38 @@ class PyiCloudBackend(PhotosBackend):
     def library(self):
         return self.api.photos
 
-    def _ensure_loaded(self, why: str = "") -> None:
-        """Fill the id -> PhotoAsset map used by downloads and writes.
+    def _load_one(self, asset_id: str):
+        """The PhotoAsset behind an index id, fetched on first use (one record
+        lookup) so a restarted process needs no library walk to serve files."""
+        p = self._photos.get(asset_id)
+        if p is not None:
+            return p
+        with _asset_lock(asset_id):
+            p = self._photos.get(asset_id)
+            if p is None:
+                p = self._fetch(asset_id)
+                if p is not None:
+                    self._photos[asset_id] = p
+        return p
 
-        Only snapshot() builds it, and Ops skips snapshot() when iCloud's change
-        token did not move. On a fresh process the index is still fresh but this
-        map is empty, so downloads would 404 until the library changes: load it
-        on first use instead.
-        """
-        if self._photos:
-            return
-        with self._load_lock:
-            if self._photos:
-                return
-            log.info("loading the library snapshot (%s)", why or "first use")
-            self.snapshot()
+    def _fetch(self, asset_id: str):
+        """PhotoAsset for one id from two record lookups (asset, then its master).
+        Not library.all.get(): for an id iCloud does not know that falls back to
+        walking the whole library, minutes long, which a stale link must not cause."""
+        lib = self.library._get_root_library()
+        resp = _retry(lambda: lib._client.lookup(
+            record_names=[asset_id], zone_id=CKZoneIDReq(**lib.zone_id)), f"lookup {asset_id}")
+        asset = next((r for r in getattr(resp, "records", None) or []
+                      if _name_and_type(r) == (asset_id, "CPLAsset")), None)
+        if asset is None:
+            return None
+        ref = record_field_value(asset, "masterRef")
+        mid = getattr(ref, "recordName", None) or (ref or {}).get("recordName")
+        master = self._lookup_master(lib, mid) if mid else None
+        if master is None:
+            return None
+        alb = self.library.all
+        return alb._library.asset_type(alb.service, master, asset, library=alb._library)
 
     # ---------------- reads ----------------
     def snapshot(self) -> Snapshot:
@@ -166,6 +234,11 @@ class PyiCloudBackend(PhotosBackend):
         self._photos = photos
         assets = [self._rec(p, hidden=pid in hidden, deleted=pid in deleted)
                   for pid, p in photos.items()]
+        raws = {a.id: r for a in assets if (r := self._raw_rec(photos[a.id], a))}
+        assets += raws.values()
+        for table in (members, smart):
+            for key, ids in table.items():
+                ids.extend(i + RAW_SUFFIX for i in list(ids) if i in raws)
         return Snapshot(assets=assets, albums=albums, memberships=members, smart=smart)
 
     def change_token(self) -> str | None:
@@ -174,9 +247,155 @@ class PyiCloudBackend(PhotosBackend):
         lib._current_sync_token = None   # pyicloud caches it; force a fresh read
         try:
             return _retry(lib.sync_cursor, "sync_cursor")
+        except BackendError:
+            raise                        # busy or unreachable: try again soon, do not re-read everything
         except Exception:
             log.warning("no sync token; falling back to a full snapshot", exc_info=True)
             return None
+
+    # Record types whose changes only a full read can sort out (album layout).
+    _FULL_READ_TYPES: set[str] = set()
+    MAX_INCREMENTAL = 3000
+
+    def changes(self, since: str, known: Known | None = None) -> Changes | None:
+        """Only what changed since `since`, from CloudKit's zone changes feed
+        (the same feed iCloud.com uses). None when a full read is safer."""
+        lib = self.library._get_root_library()
+        req = CKZoneChangesZoneReq(zoneID=lib.zone_id, syncToken=since, reverse=False)
+        try:
+            zones = _retry(lambda: list(lib._client.iter_changes(zone_req=req)), "changes")
+        except BackendError:
+            raise
+        except Exception:
+            log.warning("changes(%s) failed; falling back to a full snapshot", since[:8], exc_info=True)
+            return None
+        by_master = {p.master_id: pid for pid, p in self._photos.items()}
+        assets: dict[str, Any] = {}      # CPLAsset record name (= asset id) -> record
+        masters: dict[str, Any] = {}     # CPLMaster record name -> record
+        removed: set[str] = set()
+        member_add: list[tuple[str, str]] = []
+        member_del: list[tuple[str, str]] = []
+        albums: dict[str, AlbumRec] = {}
+        albums_gone: set[str] = set()
+        relations: list[tuple[str, str, bool]] = []
+        token = since
+        for zone in zones:
+            token = zone.syncToken or token
+            for rec in zone.records:
+                name, rtype = _name_and_type(rec)
+                if rtype in self._FULL_READ_TYPES:
+                    return None
+                if "-IN-" in (name or ""):
+                    aid, _, alb_id = name.partition("-IN-")
+                    relations.append((alb_id, aid, rtype is None or bool(_flag(rec, "isDeleted"))))
+                    continue
+                if rtype == "CPLAlbum":
+                    if name == ROOT_FOLDER:
+                        continue
+                    label = decode_encrypted_text(rec, "albumNameEnc")
+                    try:
+                        kind = int(record_field_value(rec, "albumType"))
+                    except Exception:
+                        kind = 0
+                    if kind not in (0, 3):
+                        continue         # smart albums are queries, not stored records
+                    if label is None or _flag(rec, "isDeleted"):
+                        albums_gone.add(name)
+                        continue
+                    parent = record_field_value(rec, "parentId")
+                    albums[name] = AlbumRec(id=name, name=label,
+                                            parent_id=None if parent in (None, "", ROOT_FOLDER) else parent,
+                                            is_folder=kind == 3)
+                    continue
+                if rtype is None or bool(getattr(rec, "deleted", False)) and rtype in ("CPLAsset", "CPLMaster"):
+                    if name in self._photos or (known and known.asset(name)):
+                        removed.add(name)
+                    elif name in by_master:
+                        removed.add(by_master[name])
+                    elif known is not None and known.album(name):
+                        albums_gone.add(name)
+                    elif known is None:
+                        return None      # nothing to tell us what this was
+                    # else: the master of an asset gone in this same batch, or a
+                    # relation/record that never reached the index
+                elif rtype == "CPLAsset":
+                    assets[name] = rec
+                elif rtype == "CPLMaster":
+                    masters[name] = rec
+        wanted = set()                   # masters the batch's assets point at
+        for rec in assets.values():
+            ref = record_field_value(rec, "masterRef")
+            wanted.add(getattr(ref, "recordName", None) or (ref or {}).get("recordName"))
+        if any(m not in by_master and m not in wanted for m in masters):
+            return None                  # a master alone, for an asset we do not hold
+        batch_albums = set(albums)
+        for alb_id, aid, gone in relations:
+            if alb_id in albums_gone or not (alb_id in batch_albums or (known and known.album(alb_id))):
+                continue                 # smart/unknown container, or the album itself is going
+            (member_del if gone else member_add).append((alb_id, aid))
+        affected = (set(assets) | {by_master[m] for m in masters if m in by_master}) - removed
+        if len(affected) + len(removed) > self.MAX_INCREMENTAL:
+            return None
+        alb = self.library.all
+        upserts: list[AssetRec] = []
+        fresh: dict[str, Any] = {}
+        for aid in sorted(affected):
+            old = self._photos.get(aid)
+            asset = assets.get(aid) or (old.asset_record if old else None)
+            ref = record_field_value(asset, "masterRef") if asset is not None else None
+            mid = getattr(ref, "recordName", None) or (ref or {}).get("recordName") \
+                or (old.master_id if old else None)
+            master = masters.get(mid) or (old.master_record if old else None)
+            if master is None and mid and asset is not None:
+                master = self._lookup_master(lib, mid)   # e.g. a lone favorite toggle
+            if master is None or asset is None:
+                return None              # half a record: let a full read sort it out
+            p = alb._library.asset_type(alb.service, master, asset, library=alb._library)
+            fresh[aid] = p
+            rec = self._rec(
+                p, hidden=_flag(asset, "isHidden"),
+                deleted=_flag(asset, "isDeleted") or _flag(master, "isDeleted"))
+            upserts.append(rec)
+            if (raw := self._raw_rec(p, rec)) is not None:
+                upserts.append(raw)
+        self._photos.update(fresh)
+        for mid in removed:
+            self._photos.pop(mid, None)
+        gone = sorted(removed | {i + RAW_SUFFIX for i in removed})
+        return Changes(token=token, upserts=upserts, removed=gone,
+                       member_add=member_add, member_del=member_del,
+                       albums=list(albums.values()), albums_gone=sorted(albums_gone))
+
+    def forget_album(self, album_id: str) -> None:
+        """Drop the cached album object (renamed or deleted elsewhere)."""
+        self._albums.pop(album_id, None)
+
+    def _lookup_master(self, lib, master_id: str):
+        try:
+            resp = _retry(lambda: lib._client.lookup(
+                record_names=[master_id], zone_id=CKZoneIDReq(**lib.zone_id)), "lookup master")
+        except Exception:
+            log.warning("lookup of master %s failed", master_id, exc_info=True)
+            return None
+        for rec in getattr(resp, "records", None) or []:
+            if _name_and_type(rec) == (master_id, "CPLMaster"):
+                return rec
+        return None
+
+    @staticmethod
+    def _raw_rec(p, base: AssetRec) -> AssetRec | None:
+        """The RAW half of a RAW+JPEG pair, as a read-only entry of its own."""
+        if base.item_type != "image" or base.live:
+            return None
+        try:
+            res = p.resources.get("alternative")
+        except Exception:
+            return None
+        name = getattr(res, "filename", None) if res else None
+        if not name or Path(name).suffix.lower() in _NOT_RAW:
+            return None
+        return replace(base, id=base.id + RAW_SUFFIX, filename=name,
+                       size=int(getattr(res, "size", 0) or 0))
 
     @staticmethod
     def _rec(p, *, hidden: bool = False, deleted: bool = False) -> AssetRec:
@@ -190,10 +409,8 @@ class PyiCloudBackend(PhotosBackend):
     def download_url(self, asset_id: str, version: str = "original") -> str | None:
         """URL from the cached record. No iCloud round trip: listings call this
         once per asset, so it must stay cheap. See fresh_url() for downloads."""
-        p = self._photos.get(asset_id)
-        if p is None:
-            self._ensure_loaded(f"download {asset_id}")
-            p = self._photos.get(asset_id)
+        asset_id, version = _split_raw(asset_id, version)
+        p = self._load_one(asset_id)
         if p is None:
             return None
         return p.download_url(version)
@@ -205,6 +422,7 @@ class PyiCloudBackend(PhotosBackend):
         days, so the cached URL of a photo opened later in the day has long
         expired and every download would answer 410.
         """
+        asset_id, version = _split_raw(asset_id, version)
         url = self.download_url(asset_id, version)
         ttl = url_ttl(url)
         if ttl is not None and ttl > URL_REFRESH_MARGIN:
@@ -233,19 +451,16 @@ class PyiCloudBackend(PhotosBackend):
                 if ttl is not None and ttl > URL_REFRESH_MARGIN:
                     return current     # another thread already refreshed it
             try:
-                rec = _retry(lambda: self.library.all.get(asset_id), f"requery {asset_id}")
+                rec = self._fetch(asset_id)
             except Exception:
                 log.warning("re-query of %s failed; keeping the cached URL", asset_id, exc_info=True)
                 return None
             return rec
 
     def _photo(self, asset_id: str):
-        p = self._photos.get(asset_id)
+        p = self._load_one(asset_id)
         if p is None:
-            self._ensure_loaded(f"write {asset_id}")
-            p = self._photos.get(asset_id)
-        if p is None:
-            raise BackendError(f"asset {asset_id} not in snapshot; refresh first")
+            raise BackendError(f"asset {asset_id} not found in iCloud")
         return p
 
     def _album(self, album_id: str):

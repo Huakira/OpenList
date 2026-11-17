@@ -236,16 +236,26 @@ def test_live_photo_is_read_only_even_without_whitelist(env):
     ops.other("favorite", file_id("all", d["real"].id))
 
 
-def test_refresh_warms_a_restarted_backend(env):
-    """A fresh process has a fresh index but no in-memory assets: an unchanged
-    token must still warm them, or downloads 404 until the library changes."""
+def test_refresh_does_not_walk_the_library_after_a_restart(env):
+    """A restarted process has a fresh index and no in-memory assets. An
+    unchanged token must cost nothing: assets load one by one when needed."""
     ops, fb, d = env
-    warmed: list[str] = []
-    fb._ensure_loaded = lambda why="": warmed.append(why)      # type: ignore[attr-defined]
+    snaps = fb.snapshots
     assert ops.refresh() is False
-    assert warmed == ["refresh"]
-    fb.seed_asset("new.jpg")                                    # real change: snapshot path
-    assert ops.refresh() is True and warmed == ["refresh"]
+    assert fb.snapshots == snaps
+
+
+def test_changes_get_to_ask_the_index(env):
+    ops, fb, d = env
+    seen = {}
+    fb.incremental = True
+    orig = fb.changes
+    fb.changes = lambda since, known=None: (seen.update(known=known), orig(since, known))[1]
+    fb.seed_asset("NEW_0003.JPG")
+    ops.refresh()
+    k = seen["known"]
+    assert k.asset(d["real"].id) and not k.asset("nope")
+    assert k.album(d["trip"].id) and not k.album("nope")
 
 
 def test_same_name_albums_are_all_listed(env):
@@ -258,3 +268,82 @@ def test_same_name_albums_are_all_listed(env):
     assert len(trips) == 2 and len(set(trips)) == 2
     assert any("~" in n for n in trips)
     assert [e.name for e in ops.list("root")] == root       # stable
+
+
+def test_refresh_applies_changes_without_a_snapshot(env):
+    ops, fb, d = env
+    fb.incremental = True
+    snaps = fb.snapshots
+    new = fb.seed_asset("NEW_0001.JPG", favorite=True)
+    assert ops.refresh() is False                    # no full snapshot
+    assert fb.snapshots == snaps
+    assert "NEW_0001.JPG" in {e.name for e in ops.list("all")}
+    fb.remove_asset(new.id)
+    assert ops.refresh() is False
+    assert fb.snapshots == snaps
+    assert "NEW_0001.JPG" not in {e.name for e in ops.list("all")}
+
+
+def test_refresh_falls_back_to_snapshot_on_album_change(env):
+    ops, fb, d = env
+    fb.incremental = True
+    snaps = fb.snapshots
+    fb.seed_album("Another")
+    assert ops.refresh() is True
+    assert fb.snapshots == snaps + 1
+    assert "Another" in names(ops, "root")
+
+
+def test_refresh_reconciles_after_the_interval(env):
+    ops, fb, d = env
+    fb.incremental = True
+    ops.s = replace(ops.s, reconcile_interval=0)     # every change reconciles
+    snaps = fb.snapshots
+    fb.seed_asset("NEW_0002.JPG")
+    assert ops.refresh() is True
+    assert fb.snapshots == snaps + 1
+
+
+def test_raw_entries_are_read_only(env):
+    ops, fb, d = env
+    with pytest.raises(Forbidden):
+        ops._need_asset(d["real"].id + "~raw")
+
+
+def test_apply_album_membership_changes(env):
+    from icloud_bridge.backend import Changes
+    ops, fb, d = env
+    other = fb.seed_asset("IMG_0009.JPG")
+    ops.refresh()
+    trip = d["trip"].id
+    ops._apply(Changes(token="x", member_add=[(trip, other.id)]))
+    assert other.id in ops.index.members(trip) if hasattr(ops.index, "members") else True
+    assert "IMG_0009.JPG" in {e.name for e in ops.list(f"album:{trip}")}
+    ops._apply(Changes(token="x", member_del=[(trip, other.id)]))
+    assert "IMG_0009.JPG" not in {e.name for e in ops.list(f"album:{trip}")}
+
+
+def test_freshen_refreshes_on_demand_and_throttles(env):
+    ops, fb, d = env
+    ops.s = replace(ops.s, fresh_max_age=60.0, fresh_wait=5.0)
+    fb.incremental = True
+    snaps = fb.snapshots
+    fb.seed_asset("LIVE_1.JPG")
+    ops.freshen()
+    assert "LIVE_1.JPG" in {e.name for e in ops.list("all")}
+    fb.seed_asset("LIVE_2.JPG")
+    ops.freshen()                                   # within max_age: no iCloud call
+    assert "LIVE_2.JPG" not in {e.name for e in ops.list("all")}
+    assert fb.snapshots == snaps
+
+
+def test_apply_album_create_rename_delete(env):
+    from icloud_bridge.backend import AlbumRec, Changes
+    ops, fb, d = env
+    ops._apply(Changes(token="x", albums=[AlbumRec(id="NEW", name="Fresh", parent_id=None, is_folder=False)]))
+    assert "Fresh" in names(ops, "root")
+    ops._apply(Changes(token="x", albums=[AlbumRec(id="NEW", name="Renamed", parent_id=None, is_folder=False)]))
+    root = names(ops, "root")
+    assert "Renamed" in root and "Fresh" not in root
+    ops._apply(Changes(token="x", albums_gone=["NEW"]))
+    assert "Renamed" not in names(ops, "root")
