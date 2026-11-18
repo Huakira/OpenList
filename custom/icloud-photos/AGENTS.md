@@ -4,7 +4,7 @@ iCloud Photos as an OpenList storage: a thin Go driver (`driver/icloud_photos`) 
 
 ## Rules
 
-- This runs against the owner's main Apple ID. Never write to a photo or album the bridge did not create. The whitelist (`BRIDGE_WRITE_WHITELIST`) stays on until the owner turns it off at M5. Do not turn it off, and do not work around it in code or tests.
+- This runs against the owner's main Apple ID. The write whitelist (`BRIDGE_WRITE_WHITELIST`, OpenList form field 允许修改已有内容) is an ordinary deploy-time switch: the owner lifted the "only touch what the bridge created" rule on 2026-11-18. It still defaults to on; do not silently flip it in code or tests.
 - Live Photos are read-only, always: `_need_asset` in `ops.py` refuses every write on them, independent of the whitelist and still after M5. Detection is pyicloud's `is_live_photo`.
 - Deleting a file never really deletes the photo: it goes to the archive album. A real delete (`purge`) only happens through an explicit `Other` call.
 - Business rules go in `bridge/icloud_bridge/ops.py`. iCloud calls go in `pyicloud_backend.py`. The Go driver only forwards.
