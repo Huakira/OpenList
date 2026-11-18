@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the custom OpenList image: upstream + drivers/icloud_photos + drivers/pixcake.
+# Build the custom OpenList image: upstream + icloud_photos + pixcake + immich.
 #   custom/build.sh          # test, compile, build image
 #   custom/build.sh test     # only go test of the two drivers
 # Upgrading = merge the new upstream tag into this branch, set OPENLIST_VERSION, rerun
@@ -33,7 +33,7 @@ elif [ ! -d drivers/icloud_photos/bridgefs/icloud_bridge ]; then
   echo "warning: $BRIDGE_SRC/bridge not found; the binary will have no embedded bridge" >&2
 fi
 
-go test ./drivers/icloud_photos/ ./drivers/pixcake/
+go test ./drivers/icloud_photos/ ./drivers/pixcake/ ./drivers/immich/
 [ "${1:-}" = test ] && exit 0
 
 if [ ! -f public/dist/index.html ]; then

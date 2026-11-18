@@ -38,6 +38,22 @@
       "root_folder_path": "根文件夹路径",
       "read_only": "只读模式",
       "read_only-tips": "拒绝所有写操作：建项目、上传、删除。"
+    },
+    "Immich": {
+      "address": "地址",
+      "address-tips": "Immich 根地址，例如 https://immich.20031014.xyz",
+      "api_key": "API Key",
+      "api_key-tips": "账号设置 → API Keys。OpenList 用 x-api-key 发送，不会写进下载链接。",
+      "show_type": "根目录内容",
+      "show_type-tips": "root_only_album：根目录是相册（默认，同一刻/iCloud）。root：相册加一个 All。root_only_file：根目录直接列出全部照片。",
+      "album_id": "相册 ID",
+      "album_id-tips": "只挂某一个相册的 UUID。留空则列出全部相册。",
+      "hide_live_video": "隐藏实况视频",
+      "hide_live_video-tips": "Immich 把实况拆成静图 + MOV。打开（默认）后列表只显示静图；视频仍在 Immich 里。",
+      "read_only": "只读",
+      "read_only-tips": "禁止上传、建相册、删除、改名、复制、移动。",
+      "device_id": "设备 ID",
+      "device_id-tips": "上传时带给 Immich，用来去重。默认 openlist。"
     }
   },
   "config": {
@@ -46,10 +62,14 @@
     },
     "PixCake Cloud": {
       "alert": "接口是逆向得到的，不是官方公开 API。令牌过期后需要重新粘贴。"
+    },
+    "Immich": {
+      "alert": "相册即文件夹。把文件传到某个相册（或 All）就是上传原片。下载走 OpenList 反代，API Key 不会出现在链接里。实况默认只显示静图，配对视频藏起来。"
     }
   },
   "drivers": {
     "iCloudPhotos": "iCloud 照片",
-    "PixCake Cloud": "像素蛋糕云空间"
+    "PixCake Cloud": "像素蛋糕云空间",
+    "Immich": "Immich"
   }
 }

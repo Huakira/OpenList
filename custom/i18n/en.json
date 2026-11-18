@@ -38,6 +38,22 @@
       "root_folder_path": "Root folder path",
       "read_only": "Read only",
       "read_only-tips": "Refuse every write: create project, upload, delete."
+    },
+    "Immich": {
+      "address": "Address",
+      "address-tips": "Immich base URL, e.g. https://immich.20031014.xyz",
+      "api_key": "API Key",
+      "api_key-tips": "Account Settings → API Keys. OpenList sends it as x-api-key and never puts it in download URLs.",
+      "show_type": "Root contents",
+      "show_type-tips": "root_only_album: albums as folders (default, same as 一刻/iCloud). root: albums plus an All folder. root_only_file: every asset at the root.",
+      "album_id": "Album ID",
+      "album_id-tips": "Pin this storage to one album UUID. Empty lists all albums.",
+      "hide_live_video": "Hide Live Photo video",
+      "hide_live_video-tips": "Immich stores a Live Photo as a still plus a .MOV. On (default): only the still is listed. Download the still for the photo; the video stays in Immich.",
+      "read_only": "Read only",
+      "read_only-tips": "Refuse upload, mkdir, delete, rename, copy, move.",
+      "device_id": "Device ID",
+      "device_id-tips": "Sent with uploads. Immich uses deviceId + deviceAssetId to detect duplicates. Default openlist."
     }
   },
   "config": {
@@ -46,10 +62,14 @@
     },
     "PixCake Cloud": {
       "alert": "Reverse-engineered client API, not an official one. Paste a new token when it expires."
+    },
+    "Immich": {
+      "alert": "Albums are folders. Upload into an album (or All) sends the original to Immich. Downloads proxy through OpenList so the API key stays here. Live Photo stills list as one file; the paired video is hidden by default."
     }
   },
   "drivers": {
     "iCloudPhotos": "iCloud Photos",
-    "PixCake Cloud": "PixCake Cloud"
+    "PixCake Cloud": "PixCake Cloud",
+    "Immich": "Immich"
   }
 }
