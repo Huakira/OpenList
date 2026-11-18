@@ -4,8 +4,10 @@ Directory keys          File ids
   root                    f|<dir key>|<asset id>
   all
   deleted
+  shared                 (shared photo streams: read-only, refreshed on demand)
   smart:<name>
   album:<id>   (the archive album is an ordinary album:<id>, special-cased)
+  album:s:<guid>   (a shared album)
   folder:<id>
 """
 
@@ -17,7 +19,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO, Callable
@@ -37,6 +39,13 @@ SMART_LABELS = {
     "Time-lapse": "延时摄影",
 }
 OTHER_OPS = {"favorite", "unfavorite", "hide", "unhide", "recover", "purge"}
+
+# Shared photo streams (legacy 共享相册): every album and asset id carries this
+# prefix, all writes to them are refused, and they refresh on demand because
+# shared streams have no change feed to ride.
+SHARED_PREFIX = "s:"
+SHARED_DIR = "shared"        # root-level directory key
+SHARED_PARENT = "shared"     # sentinel parent_id of shared albums in the index
 
 
 class OpError(Exception):
@@ -96,6 +105,9 @@ class Ops:
         self._fresh_lock = threading.Lock()
         self._inflight: threading.Event | None = None
         self._last_try = float("-inf")          # one write at a time (3.4)
+        self._shared_lock = threading.Lock()
+        self._shared_inflight: dict[str, threading.Event] = {}
+        self._shared_tries: dict[str, float] = {}
         self._uploads = ThreadPoolExecutor(max_workers=1, thread_name_prefix="upload")
         self._pending: list[Future] = []
         self.s.staging_dir.mkdir(parents=True, exist_ok=True)
@@ -203,6 +215,8 @@ class Ops:
             return "root", ""
         if key in ("all", "deleted"):
             return key, ""
+        if key == SHARED_DIR:
+            return "shared", ""
         k, _, v = key.partition(":")
         if k in ("smart", "album", "folder") and v:
             if k == "album" and self._archive_id() == v:
@@ -218,6 +232,8 @@ class Ops:
         kind, ref = self.kind(key)
         if kind == "root":
             return self._list_root()
+        if kind == "shared":
+            return self._list_shared()
         if kind == "folder":
             return self._dir_entries(self.index.child_albums(ref), set())
         if kind == "all":
@@ -227,6 +243,11 @@ class Ops:
         elif kind == "smart":
             assets = self.index.smart_assets(ref)
         else:  # album / archive
+            if ref.startswith(SHARED_PREFIX):
+                if not self.s.show_shared_albums:
+                    raise NotFound(key)
+                self._kick(f"album:{ref}", lambda: self._refresh_shared_album(ref),
+                           self.s.fresh_max_age)
             if not self.index.album(ref):
                 raise NotFound(key)
             assets = self.index.album_assets(ref)
@@ -240,6 +261,8 @@ class Ops:
                 if n in SMART_LABELS:
                     out.append(Entry(id=f"smart:{n}", name=SMART_LABELS[n], is_dir=True))
         out.append(Entry(id="deleted", name=self.s.root_names["deleted"], is_dir=True))
+        if self.s.show_shared_albums:
+            out.append(Entry(id=SHARED_DIR, name=self.s.root_names["shared"], is_dir=True))
         out.extend(self._dir_entries(self.index.child_albums(None), {e.name for e in out}))
         return out
 
@@ -265,6 +288,72 @@ class Ops:
     def _dir_entry(self, a: AlbumRec) -> Entry:
         return Entry(id=f"{'folder' if a.is_folder else 'album'}:{a.id}",
                      name=naming.dir_name(a.name), is_dir=True)
+
+    # ======================= shared photo streams =======================
+    # Read-only, `s:`-prefixed ids, and no change feed to ride: each scope (the
+    # album list, one album) refreshes on demand with the same shape as
+    # freshen() -- kick a background re-read, wait at most fresh_wait, serve
+    # what we have. A shared failure never touches the private refresh.
+    def _kick(self, key: str, fn: Callable[[], None], max_age: float) -> None:
+        with self._shared_lock:
+            ev = self._shared_inflight.get(key)
+            if ev is None:
+                if time.monotonic() - self._shared_tries.get(key, float("-inf")) < max_age:
+                    return
+                self._shared_tries[key] = time.monotonic()
+                ev = threading.Event()
+                self._shared_inflight[key] = ev
+
+                def run() -> None:
+                    try:
+                        fn()
+                    except Exception as e:
+                        with self._shared_lock:
+                            self._shared_tries.pop(key, None)   # retry on the next open
+                        log.warning("shared refresh (%s) failed: %s", key, e)
+                    finally:
+                        with self._shared_lock:
+                            self._shared_inflight.pop(key, None)
+                        ev.set()
+                threading.Thread(target=run, daemon=True).start()
+        ev.wait(self.s.fresh_wait)
+
+    def _list_shared(self) -> list[Entry]:
+        if not self.s.show_shared_albums:
+            raise NotFound("shared albums are hidden (BRIDGE_SHOW_SHARED_ALBUMS=0)")
+        self._kick("shared:list", self._refresh_shared_list, self.s.fresh_max_age)
+        return self._dir_entries(self.index.child_albums(SHARED_PARENT), set())
+
+    def _refresh_shared_list(self) -> None:
+        """Re-read the shared album list and reconcile it into the index."""
+        fresh = {r.id: replace(r, parent_id=SHARED_PARENT)
+                 for r in self.backend.shared_albums()}
+        with self._wlock:
+            cur = {a.id: a for a in self.index.child_albums(SHARED_PARENT)}
+            for aid, rec in fresh.items():
+                old = cur.get(aid)
+                if old is None or old.name != rec.name:
+                    self.index.put_album(rec)   # members/names of this id survive
+            for aid in cur:
+                if aid not in fresh:
+                    self.index.drop_album(aid)  # drops members and names too
+            self.index.prune_shared_assets()   # and assets of albums gone for good
+        self.index.set_meta("shared_last_sync", datetime.now(timezone.utc).isoformat())
+
+    def _refresh_shared_album(self, album_id: str) -> None:
+        """Re-read one shared album's assets and swap them into the index."""
+        alb, assets = self.backend.shared_album_assets(album_id)
+        alb = replace(alb, parent_id=SHARED_PARENT)
+        ids = {a.id for a in assets}
+        with self._wlock:
+            cur = {a.id for a in self.index.album_assets(album_id)}
+            self.index.put_album(alb)           # the album appears even when the
+            for a in assets:                    # list refresh has not run yet
+                self.index.put_asset(a)
+                self.index.add_member(album_id, a.id)
+            for gone in cur - ids:              # a shared asset lives in one album
+                self.index.delete_asset(gone)
+        self.index.set_meta("shared_last_sync", datetime.now(timezone.utc).isoformat())
 
     def _file_entry(self, key: str, a: AssetRec, name: str) -> Entry:
         st = self.index.asset_status(a.id)
@@ -321,6 +410,11 @@ class Ops:
             raise ReadOnly("BRIDGE_READ_ONLY is on: all writes are refused")
 
     def _need_asset(self, asset_id: str) -> None:
+        # Shared-stream assets are read-only for good, whatever the switches
+        # say: they belong to another member's album, and shared streams have
+        # no write path anyway. This check does not depend on the whitelist.
+        if asset_id.startswith(SHARED_PREFIX):
+            raise Forbidden(f"{asset_id} is in a shared album: shared albums are read-only")
         # Live Photos are read-only for good: the still and its paired video must
         # stay together, and this check does not depend on the whitelist.
         if asset_id.endswith("~raw"):
@@ -332,6 +426,8 @@ class Ops:
             raise Forbidden(f"whitelist: asset {asset_id} was not created by the bridge")
 
     def _need_album(self, album_id: str) -> None:
+        if album_id.startswith(SHARED_PREFIX):
+            raise Forbidden(f"{album_id} is a shared album: shared albums are read-only")
         if self.s.whitelist and not self.index.is_owned("album", album_id):
             raise Forbidden(f"whitelist: album {album_id} was not created by the bridge")
 

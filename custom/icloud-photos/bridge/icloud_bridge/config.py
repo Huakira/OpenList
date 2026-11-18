@@ -25,6 +25,7 @@ class Settings:
     test_prefix: str = "__bridge_test_"
     archive_name: str = "__bridge_test_归档"
     show_smart_albums: bool = True
+    show_shared_albums: bool = True  # shared photo streams (共享相册), read-only
     china: bool = False             # Apple ID region: China mainland (icloud.com.cn)
     backend: str = "pyicloud"       # "pyicloud" | "fake" (tests, local dev)
     sync_interval: int = 300        # safety-net background refresh; directory views refresh on demand
@@ -36,6 +37,7 @@ class Settings:
         default_factory=lambda: {
             "all": "全部照片",
             "deleted": "最近删除",
+            "shared": "共享相册",
         }
     )
 
@@ -73,6 +75,7 @@ def load() -> Settings:
         test_prefix=os.environ.get("BRIDGE_TEST_PREFIX", "__bridge_test_"),
         archive_name=os.environ.get("BRIDGE_ARCHIVE_NAME", "__bridge_test_归档"),
         show_smart_albums=_bool("BRIDGE_SHOW_SMART_ALBUMS", True),
+        show_shared_albums=_bool("BRIDGE_SHOW_SHARED_ALBUMS", True),
         china=_bool("ICLOUD_CHINA", False),
         backend=os.environ.get("BRIDGE_BACKEND", "pyicloud"),
         sync_interval=int(os.environ.get("BRIDGE_SYNC_INTERVAL", "300")),

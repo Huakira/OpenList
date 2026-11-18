@@ -101,6 +101,17 @@ class PhotosBackend(ABC):
         """Cheap token that changes whenever the library changes; None = unknown."""
         return None
 
+    def shared_albums(self) -> list[AlbumRec]:
+        """Shared photo stream albums (legacy 共享相册). One webgetalbumslist
+        call. Album ids carry the `s:` prefix; parent_id is None (the caller
+        hangs them under the shared root). Raises BackendError on failure."""
+        raise BackendError("shared albums are not supported by this backend")
+
+    def shared_album_assets(self, album_id: str) -> tuple[AlbumRec, list[AssetRec]]:
+        """All assets of one shared album, re-read from iCloud (one paged walk).
+        Asset ids carry the `s:` prefix. Raises BackendError on failure."""
+        raise BackendError("shared albums are not supported by this backend")
+
     def changes(self, since: str, known: Known | None = None) -> Changes | None:
         """Incremental update since `since`. None = cannot say (album changes,
         too many changes, unsupported): the caller falls back to snapshot()."""
@@ -132,6 +143,7 @@ class FakeBackend(PhotosBackend):
         self.incremental = False         # True: changes() answers instead of None
         self.log: list[tuple[int, str, str]] = []   # (version, kind, id) kind: asset|removed|album
         self.change_calls = 0
+        self.shared_fail: set[str] = set()   # "list" or an "s:" album id: raise when read
 
     def _id(self, prefix: str) -> str:
         return f"{prefix}{next(self._ids):04d}"
@@ -151,6 +163,24 @@ class FakeBackend(PhotosBackend):
         self.blobs[rec.id] = data
         self.version += 1
         self.log.append((self.version, "asset", rec.id))
+        return rec
+
+    def seed_shared_album(self, name: str) -> AlbumRec:
+        """A shared photo stream album (id carries the s: prefix)."""
+        rec = AlbumRec(id=f"s:{self._id('S')}", name=name, parent_id=None)
+        self.albums[rec.id] = rec
+        self.members[rec.id] = []
+        return rec
+
+    def seed_shared_asset(self, album_id: str, filename: str,
+                          data: bytes = b"x", **kw) -> AssetRec:
+        """A photo inside a shared album (id carries the s: prefix)."""
+        now = datetime(2002, 1, 1, tzinfo=timezone.utc)
+        rec = AssetRec(id=f"s:{self._id('A')}", filename=filename, size=len(data),
+                       created=now, modified=now, **kw)
+        self.assets[rec.id] = rec
+        self.blobs[rec.id] = data
+        self.members.setdefault(album_id, []).append(rec.id)
         return rec
 
     def seed_album(self, name: str, parent_id: str | None = None,
@@ -192,15 +222,30 @@ class FakeBackend(PhotosBackend):
     def snapshot(self) -> Snapshot:
         self.snapshots += 1
         with self._lock:
-            live = [a for a in self.assets.values()]
+            # Shared-stream records never ride the private snapshot: they have
+            # no change feed and are refreshed on demand (see ops._kick).
+            live = [a for a in self.assets.values() if not a.id.startswith("s:")]
             smart = {
                 "Favorites": [a.id for a in live if a.favorite and not a.deleted],
                 "Hidden": [a.id for a in live if a.hidden and not a.deleted],
                 "Videos": [a.id for a in live if a.item_type == "movie" and not a.deleted],
             }
-            return Snapshot(assets=live, albums=list(self.albums.values()),
-                            memberships={k: list(v) for k, v in self.members.items()},
-                            smart=smart)
+            albums = [l for l in self.albums.values() if not l.id.startswith("s:")]
+            members = {k: v for k, v in self.members.items() if not k.startswith("s:")}
+            return Snapshot(assets=live, albums=albums, memberships=members, smart=smart)
+
+    def shared_albums(self) -> list[AlbumRec]:
+        if "list" in self.shared_fail:
+            raise BackendError("injected failure in shared_albums")
+        return [l for l in self.albums.values() if l.id.startswith("s:")]
+
+    def shared_album_assets(self, album_id: str) -> tuple[AlbumRec, list[AssetRec]]:
+        if album_id in self.shared_fail:
+            raise BackendError(f"injected failure in shared_album_assets({album_id})")
+        alb = self.albums.get(album_id)
+        if alb is None:
+            raise BackendError(f"shared album {album_id} not found")
+        return alb, [self.assets[i] for i in self.members.get(album_id, [])]
 
     def download_url(self, asset_id: str, version: str = "original") -> str | None:
         if asset_id not in self.assets:

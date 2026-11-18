@@ -15,6 +15,7 @@ The original plan (sections 0 to 9) was written in the DSH session on 2026-11-14
 | Whitelist name rule | While the whitelist is on, album names must start with `__bridge_test_`. | Plan 6.4, enforced in code. |
 | Overwrite in 全部照片 | The new photo takes the name. The old one stays in 全部照片 (archived) under a `~xxxx` name. | Deleting from All Photos never removes the photo. |
 | Deployment | The bridge joins the existing `/opt/openlist` network (`openlist_default`). M4 swaps that OpenList's image for `openlist-icloud:<ver>`. Changed from the plan's "both in one compose". | One OpenList on nyc already holds storages and users. A second one would split them. **Confirm at M4.** |
+| Shared albums (共享相册) | Read-only: every id carries `s:`, all writes refused by a hard guard (not the whitelist). Root gains a `shared` directory; each scope (album list, one album) refreshes on demand via `_kick` — shared streams have no change feed. China accounts rewrite the `albumlocation` host to `.icloud.com.cn` in `pyicloud_backend.py`. Not to be confused with the CloudKit shared photo library below. | Owner, 2026-11-18. |
 | Repo | Private `Huakira/icloud-photos-openlist`, cloned at `/opt/icloud-photos`. | Owner, 2026-11-14. |
 | Build | `golang:*-alpine` static build, binary swapped into the official `-aio` image. | The official image is alpine/musl. |
 

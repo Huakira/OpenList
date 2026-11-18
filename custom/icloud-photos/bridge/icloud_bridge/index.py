@@ -75,10 +75,12 @@ class Index:
 
     # ---------- bulk sync ----------
     def replace_snapshot(self, snap: Snapshot) -> None:
+        """Swap in a private-library snapshot. Shared-stream rows (`s:` ids,
+        parent 'shared') are refreshed on demand and never wiped here."""
         with self._lock, self.db:
-            self.db.execute("DELETE FROM assets WHERE status = 'ready'")
-            self.db.execute("DELETE FROM albums")
-            self.db.execute("DELETE FROM members")
+            self.db.execute("DELETE FROM assets WHERE status = 'ready' AND id NOT LIKE 's:%'")
+            self.db.execute("DELETE FROM albums WHERE parent_id IS NULL OR parent_id <> 'shared'")
+            self.db.execute("DELETE FROM members WHERE album_id NOT LIKE 's:%'")
             self.db.execute("DELETE FROM smart")
             self.db.executemany(
                 "INSERT OR REPLACE INTO assets (id, filename, size, created, modified,"
@@ -145,10 +147,10 @@ class Index:
 
     def all_assets(self, deleted: bool = False) -> list[AssetRec]:
         rows = self.db.execute(
-            "SELECT * FROM assets WHERE deleted=? AND hidden=0 ORDER BY created",
-            (int(deleted),),
+            "SELECT * FROM assets WHERE deleted=? AND hidden=0 AND id NOT LIKE 's:%'"
+            " ORDER BY created", (int(deleted),),
         ).fetchall() if not deleted else self.db.execute(
-            "SELECT * FROM assets WHERE deleted=1 ORDER BY created").fetchall()
+            "SELECT * FROM assets WHERE deleted=1 AND id NOT LIKE 's:%' ORDER BY created").fetchall()
         return [_row_asset(r) for r in rows]
 
     def albums_of(self, asset_id: str) -> list[str]:
@@ -228,6 +230,17 @@ class Index:
         with self._lock, self.db:
             self.db.execute("INSERT OR REPLACE INTO albums VALUES (?,?,?,?)",
                             (a.id, a.name, a.parent_id, int(a.is_folder)))
+
+    def prune_shared_assets(self) -> None:
+        """Drop shared assets no album points at any more (a shared asset
+        lives in exactly one album), plus their display-name rows."""
+        with self._lock, self.db:
+            self.db.execute(
+                "DELETE FROM assets WHERE id LIKE 's:%'"
+                " AND id NOT IN (SELECT asset_id FROM members)")
+            self.db.execute(
+                "DELETE FROM names WHERE asset_id LIKE 's:%'"
+                " AND asset_id NOT IN (SELECT asset_id FROM members)")
 
     def drop_album(self, album_id: str) -> None:
         with self._lock, self.db:

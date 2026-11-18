@@ -21,6 +21,7 @@ import requests
 from pyicloud import PyiCloudService
 from pyicloud.common.cloudkit import CKZoneChangesZoneReq, CKZoneIDReq
 from pyicloud.const import CONTENT_TYPE, CONTENT_TYPE_TEXT
+from pyicloud.exceptions import PyiCloudServiceUnavailable
 from pyicloud.services.photos.exceptions import PhotosApiError, PhotosRateLimited, PhotosServiceException
 from pyicloud.services.photos.mappers import (
     decode_encrypted_text,
@@ -45,6 +46,9 @@ SKIP_SMART = {"Library", "Recently Deleted"}
 # the RAW sits in "alternative". The RAW is listed as its own read-only entry
 # whose id is the photo's id plus this suffix.
 RAW_SUFFIX = "~raw"
+# Id prefix of every shared-stream record (albums and assets), so they can never
+# collide with private-zone ids and writes can refuse them in one check.
+SHARED_PREFIX = "s:"
 ROOT_FOLDER = "----Root-Folder----"
 _NOT_RAW = {".jpg", ".jpeg", ".heic", ".heif", ".png", ".mov", ".mp4", ".m4v"}
 
@@ -83,6 +87,19 @@ def _asset_lock(asset_id: str) -> threading.Lock:
         if lock is None:
             lock = _URL_LOCKS[asset_id] = threading.Lock()
         return lock
+
+
+def _cn_shared_host(url: str) -> str:
+    """The album list answers on the .cn service, but the albumlocation it
+    returns still names the international host, and the session cookie
+    (X-APPLE-WEBAUTH-USER, domain .icloud.com.cn) does not reach it -> 401.
+    Rewrite the shared-streams host (verified on the real account, 2026-11-18)."""
+    if "icloud.com.cn" in url:
+        return url
+    for marker in ("sharedstreams.icloud.com:", "sharedstreams.icloud.com/"):
+        if marker in url:
+            return url.replace(marker, marker.replace(".com", ".com.cn"))
+    return url
 
 
 
@@ -143,6 +160,7 @@ def _flag(record: Any, name: str) -> bool:
 class PyiCloudBackend(PhotosBackend):
     def __init__(self, apple_id: str, cookie_dir: Path, china: bool = False) -> None:
         cookie_dir.mkdir(parents=True, exist_ok=True)
+        self.china = china
         # No password: the session saved by the login step is reused.
         self.api = PyiCloudService(apple_id, cookie_directory=str(cookie_dir),
                                    china_mainland=china)
@@ -152,6 +170,11 @@ class PyiCloudBackend(PhotosBackend):
                                "code Apple sends")
         self._photos: dict[str, Any] = {}   # asset id -> PhotoAsset (for URLs, writes)
         self._albums: dict[str, Any] = {}   # album id -> PhotoAlbum
+        # Shared streams: separate namespaces, no CloudKit zone, never written.
+        # guid -> SharedPhotoStreamAlbum / "s:" id -> PhotoStreamAsset.
+        self._shared_objs: dict[str, Any] = {}
+        self._shared_photos: dict[str, Any] = {}
+        self._shared_album_of: dict[str, str] = {}
         self._load_lock = threading.Lock()
 
     @property
@@ -190,6 +213,69 @@ class PyiCloudBackend(PhotosBackend):
             return None
         alb = self.library.all
         return alb._library.asset_type(alb.service, master, asset, library=alb._library)
+
+    # ---------------- shared photo streams ----------------
+    def _shared_stream_albums(self) -> list[Any]:
+        """SharedPhotoStreamAlbum objects, with the China host rewrite applied.
+        One webgetalbumslist call. An account without the shared-streams host
+        gets an empty list, not an error."""
+        try:
+            albums = list(self.library.shared_streams)
+        except PyiCloudServiceUnavailable:
+            return []
+        if self.china:
+            for a in albums:
+                a._album_location = _cn_shared_host(a._album_location)
+        return albums
+
+    def shared_albums(self) -> list[AlbumRec]:
+        out: list[AlbumRec] = []
+        for a in self._shared_stream_albums():
+            self._shared_objs[a.id] = a
+            out.append(AlbumRec(id=SHARED_PREFIX + a.id, name=a.name,
+                                parent_id=None, is_folder=False))
+        return out
+
+    def shared_album_assets(self, album_id: str) -> tuple[AlbumRec, list[AssetRec]]:
+        guid = album_id[len(SHARED_PREFIX):]
+        alb = self._shared_objs.get(guid)
+        if alb is None:      # restarted process, or the list call has not run yet
+            alb = next((a for a in self._shared_stream_albums() if a.id == guid), None)
+            if alb is None:
+                raise BackendError(f"shared album {album_id} not found")
+            self._shared_objs[guid] = alb
+        photos = _retry(lambda: list(alb.photos), f"shared assets {guid}")
+        assets: list[AssetRec] = []
+        for p in photos:
+            key = SHARED_PREFIX + p.id
+            self._shared_photos[key] = p
+            self._shared_album_of[key] = guid
+            assets.append(replace(self._rec(p), id=key))
+        return AlbumRec(id=SHARED_PREFIX + guid, name=alb.name,
+                        parent_id=None, is_folder=False), assets
+
+    def _shared_fresh_url(self, asset_id: str, version: str) -> str | None:
+        """Signed URL for a shared asset. Shared streams have no per-asset
+        lookup (no CloudKit zone), so a stale URL means re-reading the album."""
+        p = self._shared_photos.get(asset_id)
+        url = p.download_url(version) if p is not None else None
+        if url is not None:
+            ttl = url_ttl(url)
+            if ttl is None or ttl > URL_REFRESH_MARGIN:
+                return url
+        guid = self._shared_album_of.get(asset_id)
+        alb = self._shared_objs.get(guid) if guid else None
+        if alb is None:
+            return url
+        try:
+            photos = _retry(lambda: list(alb.photos), f"shared refresh {guid}")
+        except BackendError:
+            return url                    # keep the stale URL; the caller retries
+        for q in photos:
+            self._shared_photos[SHARED_PREFIX + q.id] = q
+            self._shared_album_of[SHARED_PREFIX + q.id] = guid
+        p = self._shared_photos.get(asset_id)
+        return (p.download_url(version) if p is not None else None) or url
 
     # ---------------- reads ----------------
     def snapshot(self) -> Snapshot:
@@ -410,6 +496,9 @@ class PyiCloudBackend(PhotosBackend):
         """URL from the cached record. No iCloud round trip: listings call this
         once per asset, so it must stay cheap. See fresh_url() for downloads."""
         asset_id, version = _split_raw(asset_id, version)
+        if asset_id.startswith(SHARED_PREFIX):
+            p = self._shared_photos.get(asset_id)
+            return p.download_url(version) if p is not None else None
         p = self._load_one(asset_id)
         if p is None:
             return None
@@ -423,6 +512,8 @@ class PyiCloudBackend(PhotosBackend):
         expired and every download would answer 410.
         """
         asset_id, version = _split_raw(asset_id, version)
+        if asset_id.startswith(SHARED_PREFIX):
+            return self._shared_fresh_url(asset_id, version)
         url = self.download_url(asset_id, version)
         ttl = url_ttl(url)
         if ttl is not None and ttl > URL_REFRESH_MARGIN:
@@ -435,6 +526,8 @@ class PyiCloudBackend(PhotosBackend):
 
     def force_requery(self, asset_id: str) -> None:
         """Drop the cached record so the next call re-reads it."""
+        if asset_id.startswith(SHARED_PREFIX):
+            return          # no per-asset lookup; _shared_fresh_url re-reads the album
         with _asset_lock(asset_id):
             self._photos.pop(asset_id, None)
 
