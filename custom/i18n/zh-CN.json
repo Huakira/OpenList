@@ -68,6 +68,8 @@
       "access_token-tips": "可选：飞牛网页端任意 /p/api 请求头里的 AccessToken（F12 抓包）。填了就跳过账号密码登录。",
       "show_shared": "显示共享相册",
       "show_shared-tips": "在根目录显示共享给当前账号的相册。",
+      "show_all": "显示全部照片",
+      "show_all-tips": "在根目录显示「全部照片」虚拟目录（按拍摄时间倒序列出全部照片/视频，不按相册分组）。",
       "skip_verify": "跳过证书校验",
       "skip_verify-tips": "飞牛默认自签证书，保持开启。"
     }

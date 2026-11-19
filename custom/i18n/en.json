@@ -68,6 +68,8 @@
       "access_token-tips": "Optional: the AccessToken header from any /p/api request in the fnOS web UI (F12). Skips password login when set.",
       "show_shared": "Show shared albums",
       "show_shared-tips": "Show albums shared to this account in the root directory.",
+      "show_all": "Show all photos",
+      "show_all-tips": "Show an All Photos virtual folder in the root (all photos and videos by date taken, not grouped by album).",
       "skip_verify": "Skip TLS verify",
       "skip_verify-tips": "fnOS uses a self-signed certificate by default; keep this on."
     }
