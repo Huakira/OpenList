@@ -11,6 +11,7 @@ type Addition struct {
 	Password    string `json:"password" required:"false" default:"" help:"飞牛登录密码；账号开启两步验证时无法自动登录，请改填 AccessToken"`
 	AccessToken string `json:"access_token" default:"" help:"可选：直接填飞牛网页端的 AccessToken 请求头（浏览器 F12 抓包），填写后跳过账号密码登录"`
 	ShowShared  bool   `json:"show_shared" type:"bool" default:"true" help:"在根目录显示共享给当前账号的相册"`
+	ShowAll     bool   `json:"show_all" type:"bool" default:"true" help:"在根目录显示「全部照片」虚拟目录（按拍摄时间倒序列出全部照片/视频，不含相册分组）"`
 	SkipVerify  bool   `json:"skip_verify" type:"bool" default:"true" help:"跳过 TLS 证书校验（飞牛默认自签证书，保持开启）"`
 }
 

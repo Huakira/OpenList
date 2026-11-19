@@ -265,6 +265,116 @@ func bytesRepeat(b byte, n int) []byte {
 }
 
 // ---------------------------------------------------------------------------
+// 「全部照片」：gallery/timeline 按天统计 + gallery/getList 分页拉取
+// （参考飞牛 Web 图库与 NasPhotoTV 的 FnOsGallery：跨日翻页可能不完整，
+//  按年拉取不够时退回官方 Web 使用的单日范围逐日补齐）
+// ---------------------------------------------------------------------------
+
+const fnGalleryPageSize = 500
+
+// galleryTimeline 全库按天的照片数量统计
+func (d *FnOSPhoto) galleryTimeline(ctx context.Context) ([]galleryDay, error) {
+	var data fnListData[galleryDay]
+	if err := d.request(ctx, "GET", "/p/api/v1/gallery/timeline", url.Values{}, nil, &data); err != nil {
+		return nil, err
+	}
+	out := make([]galleryDay, 0, len(data.List))
+	for _, day := range data.List {
+		if day.Year > 0 && day.ItemCount > 0 {
+			out = append(out, day)
+		}
+	}
+	return out, nil
+}
+
+// galleryRange 拉取一段日期范围内的全部媒体，offset 翻页写入 collected（按 ID 去重）。
+// 服务端无 total/hasNext，可能把 limit 压小：非空页且有新增就继续，直到空页/读满/整页重复。
+func (d *FnOSPhoto) galleryRange(ctx context.Context, start, end time.Time, expectedTotal int64, collected map[int64]fnPhoto) error {
+	offset := 0
+	for {
+		q := url.Values{
+			"start_time": {start.Format("2006:01:02") + " 00:00:00"},
+			"end_time":   {end.Format("2006:01:02") + " 23:59:59"},
+			"limit":      {strconv.Itoa(fnGalleryPageSize)},
+			"offset":     {strconv.Itoa(offset)},
+			"mode":       {"index"},
+		}
+		var data fnListData[fnPhoto]
+		if err := d.request(ctx, "GET", "/p/api/v1/gallery/getList", q, nil, &data); err != nil {
+			return err
+		}
+		if len(data.List) == 0 {
+			return nil
+		}
+		before := len(collected)
+		for _, p := range data.List {
+			if p.ID > 0 {
+				collected[p.ID] = p
+			}
+		}
+		offset += len(data.List) // 解析失败的条目也占服务端位置，offset 不回退
+		if int64(len(collected)) >= expectedTotal {
+			return nil
+		}
+		if len(collected) == before {
+			return nil // 整页重复，视为到头
+		}
+	}
+}
+
+// listGallery 「全部照片」：时间线取全量天数 → 按年拉取；某年不足则退回逐日补齐
+func (d *FnOSPhoto) listGallery(ctx context.Context) ([]fnPhoto, error) {
+	days, err := d.galleryTimeline(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(days) == 0 {
+		return []fnPhoto{}, nil
+	}
+	yearDays := make(map[int][]galleryDay)
+	for _, day := range days {
+		yearDays[day.Year] = append(yearDays[day.Year], day)
+	}
+	years := make([]int, 0, len(yearDays))
+	for y := range yearDays {
+		years = append(years, y)
+	}
+	sort.Sort(sort.Reverse(sort.IntSlice(years)))
+
+	collected := make(map[int64]fnPhoto, len(days)*4)
+	for _, year := range years {
+		daysInYear := yearDays[year]
+		expected := 0
+		for _, day := range daysInYear {
+			expected += day.ItemCount
+		}
+		before := len(collected)
+		yearStart := time.Date(year, 1, 1, 0, 0, 0, 0, time.Local)
+		yearEnd := time.Date(year, 12, 31, 0, 0, 0, 0, time.Local)
+		_ = d.galleryRange(ctx, yearStart, yearEnd, int64(before+expected), collected)
+		if len(collected)-before < expected {
+			// 跨年范围翻页不完整：退回官方 Web 端的单日协议，逐日补齐
+			for _, day := range daysInYear {
+				dayStart := time.Date(day.Year, time.Month(day.Month), day.Day, 0, 0, 0, 0, time.Local)
+				if err := d.galleryRange(ctx, dayStart, dayStart, int64(day.ItemCount), collected); err != nil {
+					return nil, fmt.Errorf("拉取 %04d:%02d:%02d 照片失败: %w", day.Year, day.Month, day.Day, err)
+				}
+			}
+		}
+	}
+	out := make([]fnPhoto, 0, len(collected))
+	for _, p := range collected {
+		out = append(out, p)
+	}
+	// 按拍摄时间倒序
+	sort.Slice(out, func(i, j int) bool {
+		return parseFnTime(firstNonEmpty(out[i].DateTime, out[i].PhotoDateTime)).After(
+			parseFnTime(firstNonEmpty(out[j].DateTime, out[j].PhotoDateTime)))
+	})
+	return out, nil
+}
+
+// ---------------------------------------------------------------------------
 // HTTP 业务请求：AccessToken + authx 签名
 // ---------------------------------------------------------------------------
 

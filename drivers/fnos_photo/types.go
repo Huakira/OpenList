@@ -46,6 +46,15 @@ type fnPhoto struct {
 	} `json:"additional"`
 }
 
+// galleryDay gallery/timeline 返回的单天统计
+
+type galleryDay struct {
+	Year      int `json:"year"`
+	Month     int `json:"month"`
+	Day       int `json:"day"`
+	ItemCount int `json:"itemCount"`
+}
+
 // fnBaseResp 业务接口通用响应：正常时 code==0（部分接口用 errno），数据在 data
 type fnBaseResp struct {
 	Code   int             `json:"code"`

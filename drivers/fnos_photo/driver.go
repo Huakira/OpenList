@@ -101,7 +101,7 @@ func (d *FnOSPhoto) Drop(ctx context.Context) error {
 	return nil
 }
 
-// List 根目录 = 相册列表；相册目录 = 相册内照片（按拍摄时间倒序）
+// List 根目录 = 相册列表（+「全部照片」）；相册目录 = 相册内照片（按拍摄时间倒序）
 func (d *FnOSPhoto) List(ctx context.Context, dir model.Obj, args model.ListArgs) ([]model.Obj, error) {
 	id := dir.GetID()
 	if id == "" || id == "root" {
@@ -110,7 +110,24 @@ func (d *FnOSPhoto) List(ctx context.Context, dir model.Obj, args model.ListArgs
 	if albumID, ok := strings.CutPrefix(id, "album:"); ok {
 		return d.listAlbumPhotos(ctx, albumID)
 	}
+	if id == "gallery:all" {
+		return d.listAllPhotos(ctx)
+	}
 	return nil, errs.NotSupport
+}
+
+// 全部照片虚拟目录（按拍摄时间倒序）
+func (d *FnOSPhoto) listAllPhotos(ctx context.Context) ([]model.Obj, error) {
+	photos, err := d.listGallery(ctx)
+	if err != nil {
+		return nil, err
+	}
+	seenName := make(map[string]int, len(photos))
+	objs := make([]model.Obj, 0, len(photos))
+	for _, p := range photos {
+		objs = append(objs, d.photoToObj(p, seenName))
+	}
+	return objs, nil
 }
 
 func (d *FnOSPhoto) listRoot(ctx context.Context) ([]model.Obj, error) {
@@ -142,6 +159,15 @@ func (d *FnOSPhoto) listRoot(ctx context.Context) ([]model.Obj, error) {
 			seen[a.AlbumID] = true
 			objs = append(objs, albumToObj(a, d.Modified))
 		}
+	}
+	// 「全部照片」虚拟目录（gallery/timeline + getList）
+	if d.ShowAll {
+		objs = append(objs, &model.Object{
+			ID:       "gallery:all",
+			Name:     "全部照片",
+			Modified: d.Modified,
+			IsFolder: true,
+		})
 	}
 	return objs, nil
 }
