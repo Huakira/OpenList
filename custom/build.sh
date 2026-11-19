@@ -33,7 +33,7 @@ elif [ ! -d drivers/icloud_photos/bridgefs/icloud_bridge ]; then
   echo "warning: $BRIDGE_SRC/bridge not found; the binary will have no embedded bridge" >&2
 fi
 
-go test ./drivers/icloud_photos/ ./drivers/pixcake/ ./drivers/immich/
+go test ./drivers/icloud_photos/ ./drivers/pixcake/ ./drivers/immich/ ./drivers/fnos_photo/
 [ "${1:-}" = test ] && exit 0
 
 if [ ! -f public/dist/index.html ]; then

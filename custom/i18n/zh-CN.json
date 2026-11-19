@@ -56,6 +56,20 @@
       "read_only-tips": "禁止上传、建相册、删除、改名、复制、移动。",
       "device_id": "设备 ID",
       "device_id-tips": "上传时带给 Immich，用来去重。默认 openlist。"
+    },
+    "FnOSPhoto": {
+      "address": "NAS 地址",
+      "address-tips": "飞牛 NAS 地址（含协议与端口），如 https://192.168.1.10:5667；支持反向代理子路径。",
+      "username": "用户名",
+      "username-tips": "飞牛登录用户名；未填 AccessToken 时必填。",
+      "password": "密码",
+      "password-tips": "飞牛登录密码。账号开启两步验证时无法自动登录，请改填 AccessToken。",
+      "access_token": "AccessToken",
+      "access_token-tips": "可选：飞牛网页端任意 /p/api 请求头里的 AccessToken（F12 抓包）。填了就跳过账号密码登录。",
+      "show_shared": "显示共享相册",
+      "show_shared-tips": "在根目录显示共享给当前账号的相册。",
+      "skip_verify": "跳过证书校验",
+      "skip_verify-tips": "飞牛默认自签证书，保持开启。"
     }
   },
   "config": {
@@ -67,11 +81,15 @@
     },
     "Immich": {
       "alert": "相册即文件夹。把文件传到某个相册（或 All）就是上传原片。下载走 OpenList 反代，API Key 不会出现在链接里。实况默认只显示静图，配对视频藏起来。"
+    },
+    "FnOSPhoto": {
+      "alert": "只读挂载，按相册（album）展示：根目录是你的相册列表，进入相册就是里面的照片和视频。媒体直链需要 AccessToken 头，本驱动已强制走 OpenList 代理，无需任何手动设置。"
     }
   },
   "drivers": {
     "iCloudPhotos": "iCloud 照片",
     "PixCake Cloud": "像素蛋糕云空间",
-    "Immich": "Immich"
+    "Immich": "Immich",
+    "FnOSPhoto": "飞牛相册"
   }
 }

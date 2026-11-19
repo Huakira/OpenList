@@ -56,6 +56,20 @@
       "read_only-tips": "Refuse upload, mkdir, delete, rename, copy, move.",
       "device_id": "Device ID",
       "device_id-tips": "Sent with uploads. Immich uses deviceId + deviceAssetId to detect duplicates. Default openlist."
+    },
+    "FnOSPhoto": {
+      "address": "NAS address",
+      "address-tips": "fnOS NAS address (scheme + port), e.g. https://192.168.1.10:5667; reverse-proxy subpath supported.",
+      "username": "Username",
+      "username-tips": "fnOS login username; required unless AccessToken is provided.",
+      "password": "Password",
+      "password-tips": "fnOS login password. Accounts with 2FA cannot log in automatically; paste the web AccessToken instead.",
+      "access_token": "AccessToken",
+      "access_token-tips": "Optional: the AccessToken header from any /p/api request in the fnOS web UI (F12). Skips password login when set.",
+      "show_shared": "Show shared albums",
+      "show_shared-tips": "Show albums shared to this account in the root directory.",
+      "skip_verify": "Skip TLS verify",
+      "skip_verify-tips": "fnOS uses a self-signed certificate by default; keep this on."
     }
   },
   "config": {
@@ -67,11 +81,15 @@
     },
     "Immich": {
       "alert": "Albums are folders. Upload into an album (or All) sends the original to Immich. Downloads proxy through OpenList so the API key stays here. Live Photo stills list as one file; the paired video is hidden by default."
+    },
+    "FnOSPhoto": {
+      "alert": "Read-only mount structured by album: the root lists your albums, and inside an album are its photos and videos. Media links need the AccessToken header, so the driver is proxy-only — no manual settings required."
     }
   },
   "drivers": {
     "iCloudPhotos": "iCloud Photos",
     "PixCake Cloud": "PixCake Cloud",
-    "Immich": "Immich"
+    "Immich": "Immich",
+    "FnOSPhoto": "fnOS Photo"
   }
 }
