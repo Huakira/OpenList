@@ -72,6 +72,7 @@ type wsReply struct {
 	Si     string `json:"si"`
 	Token  string `json:"token"`
 	BackID string `json:"backId"`
+	Secret string `json:"secret"` // base64(AES-CBC(Trim-Sign HMAC key))，用登录信封的 key/iv 解
 	Msg    string `json:"msg"`
 }
 

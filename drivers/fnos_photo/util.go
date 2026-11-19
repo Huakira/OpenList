@@ -1,12 +1,15 @@
 package fnosphoto
 
 import (
+	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/md5"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
@@ -20,6 +23,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -99,7 +104,7 @@ func (d *FnOSPhoto) loginLocked(ctx context.Context) error {
 		"deviceName": "OpenList FnOSPhoto",
 		"did":        d.did,
 	}
-	envelope, err := buildEnvelope(hello.Pub, payload)
+	envelope, aesKey, aesIV, err := buildEnvelope(hello.Pub, payload)
 	if err != nil {
 		return err
 	}
@@ -120,6 +125,15 @@ func (d *FnOSPhoto) loginLocked(ctx context.Context) error {
 	d.token = reply.Token
 	if len(reply.BackID) == 16 {
 		d.backID = reply.BackID
+	}
+	// secret = base64(AES-CBC(Trim-Sign HMAC key))：解出明文 key 存下来，上传时签 Trim-Sign
+	d.trimKey = nil
+	if reply.Secret != "" {
+		if enc, err := base64.StdEncoding.DecodeString(reply.Secret); err == nil {
+			if key, err := aesDecryptCBC(enc, []byte(aesKey), aesIV); err == nil {
+				d.trimKey = key
+			}
+		}
 	}
 
 	// 保持 WebSocket 存活并定时 ping：飞牛的会话与 WS 连接绑定，断开会导致 AccessToken 失效
@@ -185,19 +199,20 @@ func (d *FnOSPhoto) nextReqID() string {
 
 // buildEnvelope 构造 {req:"encrypted", iv, rsa, aes} 登录信封：
 // AES-256-CBC（随机 32 字符 ASCII key + 随机 IV + PKCS7）加密报文，key 再用服务端 RSA 公钥 PKCS#1 加密
-func buildEnvelope(pubPEM string, payload map[string]any) (map[string]any, error) {
+// 返回的 aesKey/iv 供登录后解密 secret（Trim-Sign 的 HMAC key）
+func buildEnvelope(pubPEM string, payload map[string]any) (map[string]any, string, []byte, error) {
 	aesKey := randomASCII(32)
 	iv := make([]byte, aes.BlockSize)
 	if _, err := io.ReadFull(rand.Reader, iv); err != nil {
-		return nil, err
+		return nil, "", nil, err
 	}
 	plain, err := json.Marshal(payload)
 	if err != nil {
-		return nil, err
+		return nil, "", nil, err
 	}
 	block, err := aes.NewCipher([]byte(aesKey))
 	if err != nil {
-		return nil, err
+		return nil, "", nil, err
 	}
 	padded := pkcs7Pad(plain, aes.BlockSize)
 	aesCT := make([]byte, len(padded))
@@ -205,18 +220,427 @@ func buildEnvelope(pubPEM string, payload map[string]any) (map[string]any, error
 
 	rsaPub, err := parsePublicKey(pubPEM)
 	if err != nil {
-		return nil, err
+		return nil, "", nil, err
 	}
 	rsaCT, err := rsa.EncryptPKCS1v15(rand.Reader, rsaPub, []byte(aesKey))
 	if err != nil {
-		return nil, err
+		return nil, "", nil, err
 	}
 	return map[string]any{
 		"req": "encrypted",
 		"iv":  base64.StdEncoding.EncodeToString(iv),
 		"rsa": base64.StdEncoding.EncodeToString(rsaCT),
 		"aes": base64.StdEncoding.EncodeToString(aesCT),
-	}, nil
+	}, aesKey, iv, nil
+}
+
+// ---------------------------------------------------------------------------
+// 写操作：上传（/upload + notice）、加相册、建相册、回收站
+// （参考鸿蒙客户端 FMphoto jonas-pi/FMphoto 的逆向实现）
+// ---------------------------------------------------------------------------
+
+// trimJoinPath 飞牛 Trim-Path 风格的路径拼接
+func trimJoinPath(dir, name string) string {
+	return strings.TrimSuffix(dir, "/") + "/" + strings.TrimPrefix(name, "/")
+}
+
+// encodeTrimPath 逐段 encodeURIComponent（Trim-Path 头的编码方式）
+func encodeTrimPath(path string) string {
+	segs := strings.Split(strings.Trim(path, "/"), "/")
+	for i, s := range segs {
+		segs[i] = url.PathEscape(s)
+	}
+	return strings.Join(segs, "/")
+}
+
+func hmacSHA256B64(key []byte, data []byte) string {
+	h := hmac.New(sha256.New, key)
+	h.Write(data)
+	return base64.StdEncoding.EncodeToString(h.Sum(nil))
+}
+
+// buildMultipartUpload 构造 /upload 的 multipart/form-data 体
+func buildMultipartUpload(field, filename, contentType string, data []byte) (body []byte, bodyType string, err error) {
+	boundary := "----WebKitFormBoundary" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	var buf bytes.Buffer
+	fmt.Fprintf(&buf, "--%s\r\nContent-Disposition: form-data; name=\"%s\"; filename=\"%s\"\r\nContent-Type: %s\r\n\r\n", boundary, field, filename, contentType)
+	buf.Write(data)
+	fmt.Fprintf(&buf, "\r\n--%s--\r\n", boundary)
+	return buf.Bytes(), "multipart/form-data; boundary=" + boundary, nil
+}
+
+// mimeByExt 上传体的 Content-Type（按扩展名粗略）
+func mimeByExt(name string) string {
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".png":
+		return "image/png"
+	case ".gif":
+		return "image/gif"
+	case ".heic":
+		return "image/heic"
+	case ".webp":
+		return "image/webp"
+	case ".mp4", ".mov":
+		return "video/quicktime"
+	default:
+		return "application/octet-stream"
+	}
+}
+
+// firstIDFromJSON 从上传/notice 响应里尽力提取新照片 id（id/photoId/ids[0]/list[0]，兼容 data 包裹）
+func firstIDFromJSON(raw []byte) string {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &top); err != nil {
+		return ""
+	}
+	pick := func(m map[string]json.RawMessage) string {
+		for _, k := range []string{"id", "photoId", "fileId", "itemId"} {
+			if v, ok := m[k]; ok && len(v) > 0 && v[0] == '"' {
+				var s string
+				if json.Unmarshal(v, &s) == nil && s != "" {
+					return s
+				}
+			}
+		}
+		for _, k := range []string{"ids", "photoIds", "list", "itemIds"} {
+			if v, ok := m[k]; ok {
+				var arr []any
+				if json.Unmarshal(v, &arr) == nil && len(arr) > 0 {
+					s := fmt.Sprint(arr[0])
+					if s != "" && s != "<nil>" {
+						return s
+					}
+				}
+			}
+		}
+		return ""
+	}
+	if s := pick(top); s != "" {
+		return s
+	}
+	if v, ok := top["data"]; ok {
+		var dm map[string]json.RawMessage
+		if json.Unmarshal(v, &dm) == nil {
+			if s := pick(dm); s != "" {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+// firstPathFromJSON 同上，提取落盘路径提示
+func firstPathFromJSON(raw []byte) string {
+	var top map[string]any
+	if err := json.Unmarshal(raw, &top); err != nil {
+		return ""
+	}
+	lookup := func(m map[string]any) string {
+		for _, k := range []string{"path", "dir", "upload_path", "uploadPath", "targetPath", "file"} {
+			if s, ok := m[k].(string); ok && s != "" {
+				return s
+			}
+		}
+		return ""
+	}
+	if s := lookup(top); s != "" {
+		return s
+	}
+	if dm, ok := top["data"].(map[string]any); ok {
+		return lookup(dm)
+	}
+	return ""
+}
+
+// requestUploadPathHint 拿默认落盘中转路径（不同版本只实现 v1/v2 其一，参数名不同版本不一）
+func (d *FnOSPhoto) requestUploadPathHint(ctx context.Context, fileName string) string {
+	cands := []url.Values{{}, {"name": {fileName}}, {"fileName": {fileName}}, {"filename": {fileName}}}
+	for _, base := range []string{"/p/api/v2/photo/upload/path", "/p/api/v1/photo/upload/path"} {
+		for _, q := range cands {
+			var out map[string]any
+			if err := d.request(ctx, "GET", base, q, nil, &out); err != nil {
+				continue
+			}
+			b, _ := json.Marshal(out)
+			if p := firstPathFromJSON(b); p != "" {
+				return p
+			}
+		}
+	}
+	return ""
+}
+
+// uploadPhotoToLibrary 两步上传：/upload 落盘 + photo/upload/notice 入库，返回新照片 id
+// dirHint 为落盘中转目录（.<备份位置>/.@#local 之类），空则用服务端默认
+func (d *FnOSPhoto) uploadPhotoToLibrary(ctx context.Context, fileName string, data []byte, mtime time.Time, dirHint string) (photoID string, err error) {
+	if dirHint == "" {
+		dirHint = d.requestUploadPathHint(ctx, fileName)
+	}
+	if dirHint == "" {
+		return "", errors.New("未能获取上传落盘目录（photo/upload/path 无返回）")
+	}
+	fullPath := trimJoinPath(dirHint, fileName)
+	encPath := encodeTrimPath(fullPath)
+	if os.Getenv("FNOS_DEBUG") != "" {
+		fmt.Fprintf(os.Stderr, "[dbg] dirHint=%q fullPath=%q enc=%q\n", dirHint, fullPath, encPath)
+	}
+	mtim := strconv.FormatInt(mtime.Unix(), 10)
+	body, bodyType, err := buildMultipartUpload("trim-upload-file", fileName, mimeByExt(fileName), data)
+	if err != nil {
+		return "", err
+	}
+
+	// Trim-Sign 候选：登录 secret 的 HMAC 优先，token 作兼容候选，空签名兜底
+	signs := make([]string, 0, 3)
+	if len(d.trimKey) > 0 {
+		signs = append(signs, hmacSHA256B64(d.trimKey, []byte(encPath)))
+	}
+	signs = append(signs, hmacSHA256B64([]byte(d.token), []byte(encPath)))
+	signs = append(signs, "")
+
+	var uploadRaw []byte
+	uploaded := false
+	for _, sign := range signs {
+		req := d.client.R().SetContext(ctx).
+			SetHeader("Content-Type", bodyType).
+			SetHeader("Trim-Path", encPath).
+			SetHeader("Trim-Sign", sign).
+			SetHeader("Trim-Mtim", mtim).
+			SetHeader("Cookie", "fnos-token="+d.token+"; language=zh-CN").
+			SetBody(body)
+		resp, err := req.Execute("POST", d.baseURL+"/upload")
+		if err != nil {
+			return "", err
+		}
+		if resp.StatusCode()/100 != 2 {
+			continue
+		}
+		uploadRaw = resp.Body()
+		var shell fnBaseResp
+		if json.Unmarshal(uploadRaw, &shell) == nil && shell.code() != 0 {
+			continue // 签名不对，换下一个候选
+		}
+		if os.Getenv("FNOS_DEBUG") != "" {
+			fmt.Fprintf(os.Stderr, "[dbg] /upload http=%d raw=%s\n", resp.StatusCode(), truncateBytes(resp.Body(), 300))
+		}
+		uploaded = true
+		break
+	}
+	if !uploaded {
+		return "", errors.New("文件上传落盘失败（/upload 未接受，Trim-Sign 候选均未通过）")
+	}
+
+	// notice 入库：多候选 body 依次尝试（不同版本字段差异，参考 FMphoto）
+	fc := time.Unix(mtime.Unix(), 0).Format("2006-01-02 15:04:05")
+	// 归档策略字段：notice 缺了它们服务端只回执不入库（FMphoto 同样必带）
+	// folder_manage_mode: 1 默认归档 / rename_strategy: 0 不改名
+	policy := func(m map[string]any) map[string]any {
+		m["folder_manage_mode"] = 1
+		m["rename_strategy"] = 0
+		return m
+	}
+	// 实测（2026-11-19）：/upload 落盘后文件在暂存目录里带 .~#N 后缀（N 从 0 起，
+	// 同名重传 N 递增），notice 的 path/file_name 必须用真实暂存名；
+	// 用不带后缀的原名只会得到 error:"system busy"。
+	// /upload 响应体为空拿不到暂存名，按 .~#0..~#9 依次探测。
+	noticeCandidates := make([]any, 0, 12)
+	for n := 0; n <= 9; n++ {
+		stagedName := fmt.Sprintf("%s.~#%d", fileName, n)
+		stagedPath := trimJoinPath(dirHint, stagedName)
+		noticeCandidates = append(noticeCandidates, policy(map[string]any{"files": []any{map[string]any{
+			"path": stagedPath, "file": stagedPath,
+			"file_create_time": fc, "fileCreateTime": fc,
+			"original_name": fileName, "originalName": fileName,
+			"file_name": stagedName, "fileName": stagedName,
+			"file_size": len(data), "fileSize": len(data),
+		}}}))
+	}
+	// 兜底：不带后缀的原名 + 纯路径数组
+	noticeCandidates = append(noticeCandidates,
+		map[string]any{"files": []any{fullPath}},
+		map[string]any{"files": []any{map[string]any{
+			"file_create_time": fc, "fileCreateTime": fc,
+			"original_name": fileName, "originalName": fileName,
+			"file_name": fileName, "fileName": fileName,
+			"file_size": len(data), "fileSize": len(data),
+		}}})
+	dup := false
+	// notice 结果在 data.list[] 里：error=="system busy" 要退避重试（FMphoto 同款策略），
+	// id!=0 才是真正入库成功；repeat=true 表示照片已在库。
+	busyWaits := []time.Duration{800 * time.Millisecond, 1600 * time.Millisecond, 3200 * time.Millisecond, 4800 * time.Millisecond}
+	for _, cand := range noticeCandidates {
+		for attempt := 0; ; attempt++ {
+			var noticeData map[string]any
+			err := d.request(ctx, "POST", "/p/api/v1/photo/upload/notice", nil, cand, &noticeData)
+			if err != nil {
+				if strings.Contains(err.Error(), "已存在") || strings.Contains(err.Error(), "exist") {
+					dup = true // 重复上传：照片已在库，不算失败
+				} else if os.Getenv("FNOS_DEBUG") != "" {
+					fmt.Fprintf(os.Stderr, "[dbg] notice cand err: %v\n", err)
+				}
+				break // 换下一个候选 body
+			}
+			busy, gotID, repeated := parseNoticeResult(noticeData)
+			if os.Getenv("FNOS_DEBUG") != "" {
+				fmt.Fprintf(os.Stderr, "[dbg] notice data=%v busy=%v id=%q repeat=%v\n", noticeData, busy, gotID, repeated)
+			}
+			if repeated {
+				dup = true
+				if gotID != "" {
+					return gotID, nil // 重复内容：用服务端返回的已有照片 id
+				}
+				break
+			}
+			if gotID != "" {
+				return gotID, nil
+			}
+			if !busy {
+				break // 明确失败（非 busy），换下一个候选 body
+			}
+			if attempt >= len(busyWaits) {
+				break // 重试次数用尽
+			}
+			select {
+			case <-time.After(busyWaits[attempt]):
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
+		}
+	}
+	// notice 未直接成功：从 /upload 响应里找 id 兜底
+	if id := firstIDFromJSON(uploadRaw); id != "" {
+		return id, nil
+	}
+	if dup {
+		return "", nil
+	}
+	return "", errors.New("上传完成但入库通知失败（notice），可稍后重试或等待飞牛自动扫盘")
+}
+
+// addToAlbum 把已入库的照片加进用户相册（ids/album_id 必须数字，否则 HTTP 400）
+func (d *FnOSPhoto) addToAlbum(ctx context.Context, photoID, albumID int64, albumName string) error {
+	if photoID <= 0 || albumID <= 0 {
+		return fmt.Errorf("相册归档失败：缺少照片/相册 id（photo=%d album=%d）", photoID, albumID)
+	}
+	return d.request(ctx, "POST", "/p/api/v1/gallery/addTo/album", nil,
+		map[string]any{"ids": []int64{photoID}, "album_id": albumID, "album_name": albumName}, nil)
+}
+
+// createAlbum 新建用户相册，返回新相册 id（响应不带 id，创建后按名字反查）
+func (d *FnOSPhoto) createAlbum(ctx context.Context, name string) (int64, error) {
+	err := d.request(ctx, "POST", "/p/api/v1/album/create", nil,
+		map[string]any{"ids": []int64{}, "category": 0, "displayType": 1, "album_name": name}, nil)
+	if err != nil && !strings.Contains(err.Error(), "4014") { // 4014=同名已存在，复用即可
+		return 0, err
+	}
+	// 按名字反查 id
+	for offset := 0; offset < 5000; offset += 100 {
+		var data fnListData[fnAlbum]
+		q := url.Values{"offset": {strconv.Itoa(offset)}, "limit": {"100"},
+			"sort_by": {"date_time"}, "sort_direction": {"desc"}}
+		if err := d.request(ctx, "GET", "/p/api/v1/album/list", q, nil, &data); err != nil {
+			return 0, err
+		}
+		for _, a := range data.List {
+			if a.AlbumName == name {
+				return a.AlbumID, nil
+			}
+		}
+		if len(data.List) < 100 {
+			break
+		}
+	}
+	return 0, fmt.Errorf("相册 %q 创建后未在列表中找到", name)
+}
+
+// recycleAdd 把照片移入回收站（多候选 body，不同版本字段不一）
+// 注意：飞牛相册没有版本历史，回收站是唯一的删除保护，驱动不用永久删除接口
+func (d *FnOSPhoto) recycleAdd(ctx context.Context, photoID int64) error {
+	idStr := strconv.FormatInt(photoID, 10)
+	cands := []any{
+		map[string]any{"ids": []int64{photoID}},
+		map[string]any{"ids": []string{idStr}},
+		map[string]any{"id": idStr},
+		map[string]any{"photoId": idStr},
+	}
+	var lastErr error
+	for _, c := range cands {
+		if err := d.request(ctx, "POST", "/p/api/v1/recycle-bin/add", nil, c, nil); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+	}
+	return lastErr
+}
+
+// parseNoticeResult 解析 notice 的 data：list[] 里 error=="system busy" 表示要重试，
+// id!=0 表示入库成功（返回字符串 id）；repeat=true 表示照片已在库。
+func parseNoticeResult(data map[string]any) (busy bool, id string, repeated bool) {
+	list, ok := data["list"].([]any)
+	if !ok {
+		// 没有 list 结构：壳层 code==0 就当成功
+		return false, "", false
+	}
+	for _, item := range list {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if e, _ := m["error"].(string); e == "system busy" {
+			busy = true
+			continue
+		}
+		if e, _ := m["error"].(string); e != "" {
+			continue // 其他错误：换候选 body
+		}
+		if r, _ := m["repeat"].(bool); r {
+			// 重复上传：内容已在库，服务端会带已有照片的 id
+			repeated = true
+			switch v := m["id"].(type) {
+			case float64:
+				if v > 0 {
+					id = strconv.FormatInt(int64(v), 10)
+				}
+			case string:
+				if v != "" && v != "0" {
+					id = v
+				}
+			}
+			continue
+		}
+		switch v := m["id"].(type) {
+		case float64:
+			if v > 0 {
+				id = strconv.FormatInt(int64(v), 10)
+			}
+		case string:
+			if v != "" && v != "0" {
+				id = v
+			}
+		}
+	}
+	return busy, id, repeated
+}
+
+// aesDecryptCBC AES-CBC 解密去 PKCS7（解登录 secret 用）
+func aesDecryptCBC(ct, key, iv []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	if len(ct) == 0 || len(ct)%aes.BlockSize != 0 {
+		return nil, errors.New("AES 密文长度非法")
+	}
+	pt := make([]byte, len(ct))
+	cipher.NewCBCDecrypter(block, iv).CryptBlocks(pt, ct)
+	pad := int(pt[len(pt)-1])
+	if pad <= 0 || pad > aes.BlockSize || pad > len(pt) {
+		return nil, errors.New("PKCS7 填充非法")
+	}
+	return pt[:len(pt)-pad], nil
 }
 
 func parsePublicKey(pubPEM string) (*rsa.PublicKey, error) {

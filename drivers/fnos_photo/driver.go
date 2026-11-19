@@ -5,9 +5,11 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -31,7 +33,8 @@ type FnOSPhoto struct {
 	token       string
 	backID      string
 	did         string
-	signEncoded bool // authx 签名规则：false=RAW（默认），true=ENCODED
+	trimKey     []byte // 登录 secret 解出的 HMAC key（/upload 的 Trim-Sign 用）
+	signEncoded bool   // authx 签名规则：false=RAW（默认），true=ENCODED
 
 	baseURL string // https://host:port（含反代子路径）
 	wsURL   string // wss://host:port/websocket?type=main
@@ -40,6 +43,9 @@ type FnOSPhoto struct {
 
 var _ driver.Driver = (*FnOSPhoto)(nil)
 var _ driver.GetRooter = (*FnOSPhoto)(nil)
+var _ driver.Put = (*FnOSPhoto)(nil)     // Put 上传
+var _ driver.Remove = (*FnOSPhoto)(nil) // Remove 删除（进回收站）
+var _ driver.Mkdir = (*FnOSPhoto)(nil)  // MakeDir 建相册
 
 func (d *FnOSPhoto) Config() driver.Config {
 	return config
@@ -283,4 +289,72 @@ func joinURL(base, path string) string {
 		path = "/" + path
 	}
 	return base + path
+}
+
+// ---------------------------------------------------------------------------
+// 写操作：Put 上传 / Remove 删除（进回收站）/ MakeDir 建相册
+// ---------------------------------------------------------------------------
+
+// Put 上传照片/视频：/upload 落盘 + notice 入库；上传进相册目录时再归档进对应相册。
+// 历史版本保护：飞牛相册没有版本历史，同名覆盖会直接丢失旧文件，
+// 因此目标已存在同名文件时拒绝上传（须先删除或改名）。
+func (d *FnOSPhoto) Put(ctx context.Context, dstDir model.Obj, stream model.FileStreamer, up driver.UpdateProgress) error {
+	if stream.GetExist() != nil {
+		return errors.New("飞牛相册没有文件版本历史，不覆盖同名文件：请先删除或改名后再上传")
+	}
+	fileName := stream.GetName()
+	if fileName == "" {
+		return errors.New("上传缺少文件名")
+	}
+	data, err := io.ReadAll(stream)
+	if err != nil {
+		return err
+	}
+	if len(data) == 0 {
+		return errors.New("上传内容为空")
+	}
+	mtime := stream.ModTime()
+	if mtime.IsZero() {
+		mtime = time.Now()
+	}
+
+	photoID, err := d.uploadPhotoToLibrary(ctx, fileName, data, mtime, "")
+	if err != nil {
+		return err
+	}
+
+	// 上传目标是相册目录：把新照片归档进该相册（此步失败文件已在库中，不回滚）
+	parentID := dstDir.GetID()
+	if albumID, ok := strings.CutPrefix(parentID, "album:"); ok {
+		aid, _ := strconv.ParseInt(albumID, 10, 64)
+		pid, _ := strconv.ParseInt(photoID, 10, 64)
+		if err := d.addToAlbum(ctx, pid, aid, dstDir.GetName()); err != nil {
+			return fmt.Errorf("照片已上传入库，但加入相册「%s」失败: %w", dstDir.GetName(), err)
+		}
+	}
+	return nil
+}
+
+// Remove 删除照片：只走回收站（飞牛没有版本历史，回收站是唯一保护，可恢复）
+func (d *FnOSPhoto) Remove(ctx context.Context, obj model.Obj) error {
+	if obj.IsDir() {
+		return errs.NotSupport // 相册删除接口未逆向（album/remove 无现成实现）
+	}
+	id, err := strconv.ParseInt(obj.GetID(), 10, 64)
+	if err != nil || id <= 0 {
+		return fmt.Errorf("无法识别照片 id（%q），删除中止", obj.GetID())
+	}
+	return d.recycleAdd(ctx, id)
+}
+
+// MakeDir 在根目录创建用户相册
+func (d *FnOSPhoto) MakeDir(ctx context.Context, parentDir model.Obj, dirName string) error {
+	if id := parentDir.GetID(); id != "" && id != "root" {
+		return errs.NotSupport // 只支持在根目录建相册
+	}
+	if dirName == "" {
+		return errors.New("相册名不能为空")
+	}
+	_, err := d.createAlbum(ctx, dirName)
+	return err
 }
