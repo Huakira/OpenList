@@ -13,6 +13,8 @@
       "proxy-tips": "Proxy for the iCloud connection, e.g. socks5h://host:1080. Empty keeps the container's proxy settings.",
       "show_smart_albums": "Show smart albums",
       "show_smart_albums-tips": "Also list smart albums (Favorites, Videos, ...) next to your own albums.",
+      "show_shared": "Mount shared albums",
+      "show_shared-tips": "Show a read-only \"Shared Albums\" folder in the root (includes albums shared with you). The first open reads from iCloud; refresh after a few seconds.",
       "write_existing": "Allow changes to existing albums",
       "write_existing-tips": "Off (default): only albums and photos created through this storage can be changed. On: you can also rename, move and archive your existing albums and photos. Live Photos stay read-only either way; delete always archives.",
       "read_only": "Read only",

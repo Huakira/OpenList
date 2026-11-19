@@ -17,6 +17,7 @@ type Addition struct {
 	China           bool   `json:"china" type:"bool" default:"false" help:"The Apple ID's region is China mainland (icloud.com.cn)."`
 	EgressProxy     string `json:"proxy" type:"string" required:"false" help:"Proxy for the iCloud connection, e.g. socks5h://host:1080. Empty keeps the container's proxy settings."`
 	ShowSmartAlbums bool   `json:"show_smart_albums" type:"bool" default:"true" help:"Show smart albums (Favorites, Videos, ...) next to your own albums."`
+	ShowShared      bool   `json:"show_shared" type:"bool" default:"true" help:"Mount shared albums (read-only) as a folder next to your own albums."`
 	WriteExisting   bool   `json:"write_existing" type:"bool" default:"false" help:"Also allow changes to albums and photos this storage did not create."`
 	ReadOnly        bool   `json:"read_only" type:"bool" default:"false" help:"Refuse every write: upload, delete, rename, move, copy."`
 	DataDir         string `json:"data_dir" type:"string" required:"false" help:"Where the bridge keeps its session and index. Defaults to data/icloud-photos."`

@@ -13,6 +13,8 @@
       "proxy-tips": "访问 iCloud 用的代理，如 socks5h://host:1080。留空则沿用容器的代理设置。",
       "show_smart_albums": "显示智能相簿",
       "show_smart_albums-tips": "在自建相簿旁边同时列出智能相簿（个人收藏、视频等）。",
+      "show_shared": "挂载共享相册",
+      "show_shared-tips": "在根目录显示「共享相册」文件夹（只读，含别人分享给你的相册）。首次打开会从 iCloud 读取，稍等几秒后刷新。",
       "write_existing": "允许修改已有相簿",
       "write_existing-tips": "关闭（默认）：只能修改通过本存储创建的相簿和照片。开启后，也能重命名、移动、归档你已有的相簿和照片。实况照片无论如何都只读；删除始终是归档。",
       "read_only": "只读模式",
