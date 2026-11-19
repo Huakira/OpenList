@@ -18,11 +18,12 @@ type Addition struct {
 var config = driver.Config{
 	Name:      "FnOSPhoto",
 	LocalSort: true,
-	NoUpload:  true,
+	// 写支持：Put 上传（/upload+notice）、Remove 走回收站、MakeDir 建相册。
+	// 飞牛相册无版本历史：同名不覆盖（报错），删除仅入回收站可恢复。
 	// 媒体直链必须携带 AccessToken 请求头，302 直链无法带上，
 	// 因此声明 OnlyProxy：下载/播放始终经 OpenList 代理，无需用户手动开 Web 代理
 	OnlyProxy: true,
-	Alert:     `info|飞牛相册为只读挂载；媒体直链需要 AccessToken 请求头，本驱动已强制走 OpenList 代理（等效自动开启 Web 代理），无需任何手动设置。`,
+	Alert:     `info|上传=落盘飞牛相册库并归入相册；删除=移入飞牛回收站（可恢复，不永久删）；根目录新建文件夹=建相册。同名文件不覆盖。媒体直链需 AccessToken 头，本驱动已强制走 OpenList 代理，无需手动设置。`,
 }
 
 func init() {
