@@ -477,17 +477,24 @@ func (d *FnOSPhoto) normalizeAddress() error {
 	if host == "" {
 		return errors.New("address 里没有主机名")
 	}
+	// 端口规则：显式写了端口就用它；带协议但没端口（https://domain）说明走 443 反代，
+	// 用协议默认端口；裸 IP 不带协议不带端口（内网直连）才补飞牛默认的 5667。
+	explicitScheme := strings.Contains(d.Address, "://")
 	port := u.Port()
-	if port == "" {
-		port = "5667" // 飞牛 Web 默认端口
+	if port == "" && !explicitScheme {
+		port = "5667"
+	}
+	hostPort := host
+	if port != "" {
+		hostPort = net.JoinHostPort(host, port)
 	}
 	basePath := strings.TrimSuffix(u.Path, "/")
-	d.baseURL = u.Scheme + "://" + net.JoinHostPort(host, port) + basePath
+	d.baseURL = u.Scheme + "://" + hostPort + basePath
 	wsScheme := "wss"
 	if u.Scheme == "http" {
 		wsScheme = "ws"
 	}
-	d.wsURL = wsScheme + "://" + net.JoinHostPort(host, port) + basePath + "/websocket?type=main"
+	d.wsURL = wsScheme + "://" + hostPort + basePath + "/websocket?type=main"
 	return nil
 }
 
