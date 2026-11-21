@@ -78,7 +78,7 @@ def load() -> Settings:
         show_shared_albums=_bool("BRIDGE_SHOW_SHARED_ALBUMS", True),
         china=_bool("ICLOUD_CHINA", False),
         backend=os.environ.get("BRIDGE_BACKEND", "pyicloud"),
-        sync_interval=int(os.environ.get("BRIDGE_SYNC_INTERVAL", "300")),
+        sync_interval=int(os.environ.get("BRIDGE_SYNC_INTERVAL", "30")),
         fresh_max_age=float(os.environ.get("BRIDGE_FRESH_MAX_AGE", "5")),
         fresh_wait=float(os.environ.get("BRIDGE_FRESH_WAIT", "4")),
         reconcile_interval=int(os.environ.get("BRIDGE_RECONCILE_INTERVAL", "1800")),
