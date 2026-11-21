@@ -290,7 +290,7 @@ class PyiCloudBackend(PhotosBackend):
 
         for p in lib.all.photos:
             photos[p.id] = p
-        for album in lib.albums:
+        for album in lib.refresh_albums():
             if isinstance(album, SmartPhotoAlbum):
                 if album.name in SKIP_SMART:
                     if album.name == "Recently Deleted":
