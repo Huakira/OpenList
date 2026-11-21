@@ -96,6 +96,13 @@ class Index:
                 "INSERT OR IGNORE INTO members VALUES (?,?)",
                 [(aid, sid) for aid, ids in snap.memberships.items() for sid in ids],
             )
+            # A RAW+JPEG pair's ~raw twin mirrors every album membership of its
+            # base record once the twin is in the assets table.
+            self.db.execute(
+                "INSERT OR IGNORE INTO members "
+                "SELECT m.album_id, m.asset_id || '~raw' FROM members m "
+                "JOIN assets a ON a.id = m.asset_id || '~raw' "
+                "WHERE m.asset_id NOT LIKE '%~raw'")
             self.db.executemany(
                 "INSERT OR IGNORE INTO smart VALUES (?,?)",
                 [(n, sid) for n, ids in snap.smart.items() for sid in ids],
@@ -198,9 +205,17 @@ class Index:
         with self._lock, self.db:
             self.db.execute("DELETE FROM assets WHERE id=?", (old,))
             self.put_asset(new)
+            # A row for the new id can already exist: iCloud dedups an identical
+            # re-upload into the same record, and the sync thread may have written
+            # the membership first. Rename what we can, then drop the placeholder's
+            # leftovers either way.
             for table, col in (("members", "asset_id"), ("names", "asset_id")):
-                self.db.execute(f"UPDATE {table} SET {col}=? WHERE {col}=?", (new.id, old))
-            self.db.execute("UPDATE owned SET id=? WHERE kind='asset' AND id=?", (new.id, old))
+                self.db.execute(f"UPDATE OR IGNORE {table} SET {col}=? WHERE {col}=?",
+                                (new.id, old))
+                self.db.execute(f"DELETE FROM {table} WHERE {col}=?", (old,))
+            self.db.execute("UPDATE OR IGNORE owned SET id=? WHERE kind='asset' AND id=?",
+                            (new.id, old))
+            self.db.execute("DELETE FROM owned WHERE kind='asset' AND id=?", (old,))
 
     def set_status(self, asset_id: str, status: str) -> None:
         with self._lock, self.db:

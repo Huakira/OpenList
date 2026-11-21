@@ -290,7 +290,7 @@ class PyiCloudBackend(PhotosBackend):
 
         for p in lib.all.photos:
             photos[p.id] = p
-        for album in lib.refresh_albums():
+        for album in lib._get_root_library().refresh_albums():
             if isinstance(album, SmartPhotoAlbum):
                 if album.name in SKIP_SMART:
                     if album.name == "Recently Deleted":
@@ -572,6 +572,11 @@ class PyiCloudBackend(PhotosBackend):
             # pyicloud says "outcome is uncertain": on the real account the album was
             # created anyway (M0). Never retry blindly (that could make a duplicate):
             # confirm by exact name, and fail only if it really is absent.
+            try:
+                self.library._get_root_library().refresh_albums()
+            except Exception:
+                log.warning("album re-fetch failed after uncertain create_album %r", name,
+                            exc_info=True)
             album = self._find_plain_album(name)
             if album is None:
                 raise BackendError(f"create_album outcome uncertain and no album named {name!r} found; not retried") from e
