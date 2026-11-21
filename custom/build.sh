@@ -46,6 +46,7 @@ python3 -I custom/patch-frontend.py public/dist custom/i18n
 COMMIT="$(git rev-parse --short HEAD)"
 PKG=github.com/OpenListTeam/OpenList/v4/internal/conf
 mkdir -p "$OUT"
+rm -f "$OUT/openlist"    # a stale binary here makes go build silently skip the link
 CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" go build -o "$OUT/openlist" -tags=jsoniter -trimpath \
   -ldflags "-s -w -X $PKG.Version=${OPENLIST_VERSION}+custom -X $PKG.WebVersion=$FRONTEND_VERSION -X $PKG.GitCommit=$COMMIT"
 cp custom/Dockerfile custom/requirements.txt "$OUT/"
